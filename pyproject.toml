@@ -22,7 +22,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build]
 include = [
-  "src/*"
+  "src/ucai/*"
 ]
 exclude = [
   "src/ucai/test_utils/*"
