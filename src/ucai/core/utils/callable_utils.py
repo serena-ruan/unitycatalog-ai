@@ -96,54 +96,132 @@ def parse_docstring(docstring: str) -> DocstringInfo:
     returns = None
     current_param = None
     param_description_lines = []
+    return_description_lines = []
 
     state = State.DESCRIPTION
     lines = docstring.strip().splitlines()
     lines.append("")  # Add an empty line to ensure the last param is processed
-    iterator = iter(lines)
 
-    for line in iterator:
-        stripped_line = line.strip()
+    param_indent = None
+    return_indent = None
 
-        if stripped_line in ("Args:", "Arguments:"):
-            state = State.ARGS
-            continue
-        elif stripped_line == "Returns:":
-            if current_param and param_description_lines:
-                parsed_params[current_param] = " ".join(param_description_lines).strip()
+    for line in lines:
+        if not line.strip():
+            if state == State.ARGS and current_param and param_description_lines:
+                description = " ".join(param_description_lines).strip()
+                if description:
+                    parsed_params[current_param] = description
                 current_param = None
                 param_description_lines = []
-            state = State.RETURNS
+            elif state == State.RETURNS and return_description_lines:
+                returns = " ".join(return_description_lines).strip()
             continue
-        elif stripped_line == "" and state == State.ARGS and current_param:
-            parsed_params[current_param] = " ".join(param_description_lines).strip()
-            current_param = None
-            param_description_lines = []
-            continue
+
+        stripped_line = line.lstrip()
+        indent = len(line) - len(stripped_line)
 
         if state == State.DESCRIPTION:
-            if stripped_line:
+            if stripped_line in ("Args:", "Arguments:"):
+                state = State.ARGS
+                param_indent = None
+                continue
+            elif stripped_line == "Returns:":
+                state = State.RETURNS
+                return_indent = None
+                continue
+            else:
                 description_lines.append(stripped_line)
         elif state == State.ARGS:
-            if stripped_line:
-                if ":" in stripped_line:
-                    if current_param and param_description_lines:
-                        parsed_params[current_param] = " ".join(param_description_lines).strip()
-                    param_parts = stripped_line.split(":", 1)
-                    # Remove type hints in parentheses if any
-                    current_param = param_parts[0].strip().split()[0]
-                    param_description_lines = [param_parts[1].strip()]
+            if stripped_line in ("Returns:",):
+                state = State.RETURNS
+                if current_param and param_description_lines:
+                    description = " ".join(param_description_lines).strip()
+                    if description:
+                        parsed_params[current_param] = description
+                    current_param = None
+                    param_description_lines = []
+                continue
+
+            if param_indent is None:
+                # Set the base indentation for parameters
+                param_indent = indent
+
+            if indent < param_indent:
+                # End of Args section
+                state = State.END
+                if current_param and param_description_lines:
+                    description = " ".join(param_description_lines).strip()
+                    if description:
+                        parsed_params[current_param] = description
+                    current_param = None
+                    param_description_lines = []
+                # Reprocess this line in the new state
+                if stripped_line in ("Args:", "Arguments:"):
+                    state = State.ARGS
+                    param_indent = None
+                elif stripped_line == "Returns:":
+                    state = State.RETURNS
+                    return_indent = None
                 else:
+                    state = State.END
+                continue
+
+            # Check if the section line is a new parameter
+            if ":" in stripped_line:
+                # Split only at the first colon
+                param_part, desc_part = stripped_line.split(":", 1)
+                param_part = param_part.strip()
+                desc_part = desc_part.strip()
+
+                # Handle Google-style type hints in parameters, e.g., "param (int)"
+                if "(" in param_part and param_part.endswith(")"):
+                    param_name = param_part.split("(", 1)[0].strip()
+                else:
+                    param_name = param_part
+
+                # If indent is equal to base indent, it's a new parameter
+                if indent == param_indent:
+                    if current_param and param_description_lines:
+                        description = " ".join(param_description_lines).strip()
+                        if description:
+                            parsed_params[current_param] = description
+
+                    current_param = param_name
+                    param_description_lines = [desc_part] if desc_part else []
+                else:
+                    # Handle continuations
+                    if current_param:
+                        param_description_lines.append(stripped_line)
+            else:
+                # Handle continuation lines for the parameter description
+                if current_param:
                     param_description_lines.append(stripped_line)
         elif state == State.RETURNS:
-            if stripped_line:
-                if returns is None:
-                    returns = stripped_line
-                else:
-                    returns += " " + stripped_line
+            if return_indent is None:
+                return_indent = indent
 
-    if current_param and param_description_lines:
-        parsed_params[current_param] = " ".join(param_description_lines).strip()
+            if indent < return_indent:
+                state = State.END
+                if return_description_lines:
+                    returns = " ".join(return_description_lines).strip()
+                if stripped_line in ("Args:", "Arguments:"):
+                    state = State.ARGS
+                    param_indent = None
+                elif stripped_line == "Returns:":
+                    state = State.RETURNS
+                    return_indent = None
+                else:
+                    state = State.END
+                continue
+
+            return_description_lines.append(stripped_line)
+
+    if state == State.ARGS and current_param and param_description_lines:
+        description = " ".join(param_description_lines).strip()
+        if description:
+            parsed_params[current_param] = description
+    if state == State.RETURNS and return_description_lines:
+        returns = " ".join(return_description_lines).strip()
 
     description = " ".join(description_lines).strip()
 
