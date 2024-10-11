@@ -10,6 +10,9 @@ class FullFunctionName(NamedTuple):
     schema_name: str
     function_name: str
 
+    def __str__(self) -> str:
+        return f"{self.catalog_name.strip('`')}.{self.schema_name.strip('`')}.{self.function_name.strip('`')}"
+
 
 def validate_full_function_name(function_name: str) -> FullFunctionName:
     """
@@ -27,12 +30,6 @@ def validate_full_function_name(function_name: str) -> FullFunctionName:
             f"Invalid function name: {function_name}, expecting format <catalog_name>.<schema_name>.<function_name>."
         )
     return FullFunctionName(catalog_name=splits[0], schema_name=splits[1], function_name=splits[2])
-
-
-def strip_backticks(s: str) -> str:
-    if s.startswith("`") and s.endswith("`"):
-        return s[1:-1]
-    return s
 
 
 def is_base64_encoded(s: str) -> bool:

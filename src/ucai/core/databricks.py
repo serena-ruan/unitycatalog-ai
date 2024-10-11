@@ -26,7 +26,6 @@ from ucai.core.utils.type_utils import (
     is_time_type,
 )
 from ucai.core.utils.validation_utils import (
-    strip_backticks,
     validate_full_function_name,
     validate_param,
 )
@@ -111,11 +110,7 @@ def extract_function_name(sql_body: str) -> str:
         result = match.group(1)
         full_function_name = validate_full_function_name(result)
         # backticks are only required in SQL, not in python APIs
-        return (
-            f"{strip_backticks(full_function_name.catalog_name)}."
-            f"{strip_backticks(full_function_name.schema_name)}."
-            f"{strip_backticks(full_function_name.function_name)}"
-        )
+        return str(full_function_name)
     raise ValueError(
         f"Could not extract function name from the sql body: {sql_body}.\nPlease "
         "make sure the sql body follows the syntax of CREATE FUNCTION "
