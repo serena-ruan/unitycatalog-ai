@@ -154,6 +154,11 @@ def test_uc_function_to_llama_tool(client):
         # Validate passthrough of LlamaIndex argument
         assert tool.metadata.return_direct
 
+        # Validate tool repr
+        assert str(tool).startswith(
+            f"UnityCatalogTool(description='', name='{CATALOG}__{SCHEMA}__test',"
+        )
+
         result = json.loads(tool.fn(x="some_string"))["value"]
         assert result == "some_string"
 

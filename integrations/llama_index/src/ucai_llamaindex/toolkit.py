@@ -1,4 +1,5 @@
 import json
+from dataclasses import asdict
 from typing import Any, Callable, Dict, List, Optional
 
 from llama_index.core.tools import FunctionTool
@@ -41,6 +42,13 @@ class UnityCatalogTool(FunctionTool):
         super().__init__(*args, fn=fn, metadata=metadata, **kwargs)
         self.client_config = client_config
 
+    def __repr__(self) -> str:
+        return (
+            "UnityCatalogTool("
+            + ", ".join(f"{k}={v!r}" for k, v in asdict(self.metadata).items() if v is not None)
+            + ")"
+        )
+
 
 class UCFunctionToolkit(BaseModel):
     """
@@ -50,7 +58,8 @@ class UCFunctionToolkit(BaseModel):
         function_names (List[str]): List of function names in 'catalog.schema.function' format.
         tools_dict (Dict[str, FunctionTool]): A dictionary mapping function names to their corresponding tools.
         client (Optional[BaseFunctionClient]): The client used to manage functions.
-        return_direct (bool): Whether the tool should return the output directly.
+        return_direct (bool): Whether the tool should return the output directly. If this is set to True, the
+            response from an agent is returned directly, without being interpreted and rewritten by the agent.
     """
 
     function_names: List[str] = Field(
