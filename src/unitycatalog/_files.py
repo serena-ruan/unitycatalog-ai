@@ -17,7 +17,6 @@ from ._types import (
     HttpxRequestFiles,
     RequestFiles,
 )
-from ._utils import is_mapping_t, is_sequence_t, is_tuple_t
 
 
 def is_base64_file_input(obj: object) -> TypeGuard[Base64FileInput]:
@@ -52,6 +51,8 @@ def to_httpx_files(files: RequestFiles) -> HttpxRequestFiles: ...
 
 
 def to_httpx_files(files: RequestFiles | None) -> HttpxRequestFiles | None:
+    from ._utils import is_mapping_t, is_sequence_t
+
     if files is None:
         return None
 
@@ -66,6 +67,8 @@ def to_httpx_files(files: RequestFiles | None) -> HttpxRequestFiles | None:
 
 
 def _transform_file(file: FileTypes) -> HttpxFileTypes:
+    from ._utils import is_tuple_t
+
     if is_file_content(file):
         if isinstance(file, os.PathLike):
             path = pathlib.Path(file)
@@ -94,6 +97,8 @@ async def async_to_httpx_files(files: RequestFiles) -> HttpxRequestFiles: ...
 
 
 async def async_to_httpx_files(files: RequestFiles | None) -> HttpxRequestFiles | None:
+    from ._utils import is_mapping_t, is_sequence_t
+
     if files is None:
         return None
 
@@ -108,6 +113,8 @@ async def async_to_httpx_files(files: RequestFiles | None) -> HttpxRequestFiles 
 
 
 async def _async_transform_file(file: FileTypes) -> HttpxFileTypes:
+    from ._utils import is_tuple_t
+
     if is_file_content(file):
         if isinstance(file, os.PathLike):
             path = anyio.Path(file)
