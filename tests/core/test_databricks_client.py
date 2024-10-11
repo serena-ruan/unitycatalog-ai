@@ -537,30 +537,39 @@ def test_list_functions(client: DatabricksFunctionClient):
     ("sql_body", "function_name"),
     [
         (
-            "CREATE OR REPLACE FUNCTION test(s STRING) RETURNS STRING LANGUAGE PYTHON AS $$ return s $$",
-            "test",
-        ),
-        (
             "CREATE OR REPLACE FUNCTION a.b.test(s STRING) RETURNS STRING LANGUAGE PYTHON AS $$ return s $$",
             "a.b.test",
-        ),
-        (
-            "CREATE FUNCTION a.test(s STRING) RETURNS STRING LANGUAGE PYTHON AS $$ return s $$",
-            "a.test",
         ),
         (
             "CREATE TEMPORARY FUNCTION a.b.test(s STRING) RETURNS STRING LANGUAGE PYTHON AS $$ return s $$",
             "a.b.test",
         ),
-        (
-            "CREATE TEMPORARY FUNCTION IF NOT EXISTS test(s STRING) RETURNS STRING LANGUAGE PYTHON AS $$ return s $$",
-            "test",
-        ),
         ("CREATE FUNCTION IF NOT EXISTS a.b.test() RETURN 123", "a.b.test"),
+        (
+            "CREATE FUNCTION `some-catalog`.`some-schema`.`test_function`() RETURN 123",
+            "some-catalog.some-schema.test_function",
+        ),
+        (
+            "CREATE FUNCTION `奇怪的catalog`.`some-schema`.test_function() RETURN 123",
+            "奇怪的catalog.some-schema.test_function",
+        ),
     ],
 )
 def test_extract_function_name(sql_body, function_name):
     assert extract_function_name(sql_body) == function_name
+
+
+@pytest.mark.parametrize(
+    ("sql_body"),
+    [
+        "CREATE OR REPLACE FUNCTION test(s STRING) RETURNS STRING LANGUAGE PYTHON AS $$ return s $$",
+        "CREATE FUNCTION a.test(s STRING) RETURNS STRING LANGUAGE PYTHON AS $$ return s $$",
+        "CREATE TEMPORARY FUNCTION IF NOT EXISTS test(s STRING) RETURNS STRING LANGUAGE PYTHON AS $$ return s $$",
+    ],
+)
+def test_invalid_function_name(sql_body):
+    with pytest.raises(ValueError, match=r"Could not extract function name from the sql body"):
+        extract_function_name(sql_body)
 
 
 @pytest.mark.parametrize(
@@ -1089,7 +1098,10 @@ def test_create_function_without_replace(client: DatabricksFunctionClient):
     # Create the function for the first time
     with create_python_function_and_cleanup(client, func=simple_func, schema=SCHEMA):
         # Attempt to create the same function again without replace
-        with pytest.raises(RuntimeError, match="Failed to create function for simple_func"):
+        with pytest.raises(
+            Exception,
+            match=f"Cannot create the function `{CATALOG}`.`{SCHEMA}`.`simple_func` because it already exists",
+        ):
             client.create_python_function(
                 func=simple_func, catalog=CATALOG, schema=SCHEMA, replace=False
             )

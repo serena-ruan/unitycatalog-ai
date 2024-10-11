@@ -25,7 +25,10 @@ from ucai.core.utils.type_utils import (
     convert_timedelta_to_interval_str,
     is_time_type,
 )
-from ucai.core.utils.validation_utils import validate_full_function_name, validate_param
+from ucai.core.utils.validation_utils import (
+    FullFunctionName,
+    validate_param,
+)
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -89,12 +92,14 @@ def extract_function_name(sql_body: str) -> str:
     Extract function name from the sql body.
     CREATE FUNCTION syntax reference: https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-ddl-create-sql-function.html#syntax
     """
+    # NOTE: catalog/schema/function names follow guidance here:
+    # https://docs.databricks.com/en/sql/language-manual/sql-ref-names.html#catalog-name
     pattern = re.compile(
         r"""
         CREATE\s+(?:OR\s+REPLACE\s+)?      # Match 'CREATE OR REPLACE' or just 'CREATE'
         (?:TEMPORARY\s+)?                  # Match optional 'TEMPORARY'
         FUNCTION\s+(?:IF\s+NOT\s+EXISTS\s+)?  # Match 'FUNCTION' and optional 'IF NOT EXISTS'
-        ([\w.]+)                           # Capture the function name (including schema if present)
+        (?P<name>[^ /.]+\.[^ /.]+\.[^ /.]+)          # Capture the function name (including schema if present)
         \s*\(                              # Match opening parenthesis after function name
     """,
         re.IGNORECASE | re.VERBOSE,
@@ -102,9 +107,12 @@ def extract_function_name(sql_body: str) -> str:
 
     match = pattern.search(sql_body)
     if match:
-        return match.group(1)
+        result = match.group("name")
+        full_function_name = FullFunctionName.validate_full_function_name(result)
+        # backticks are only required in SQL, not in python APIs
+        return str(full_function_name)
     raise ValueError(
-        f"Could not extract function name from the sql body {sql_body}.\nPlease "
+        f"Could not extract function name from the sql body: {sql_body}.\nPlease "
         "make sure the sql body follows the syntax of CREATE FUNCTION "
         "statement in Databricks: "
         "https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-ddl-create-sql-function.html#syntax."
@@ -360,8 +368,8 @@ class DatabricksFunctionClient(BaseFunctionClient):
         Returns:
             FunctionInfo: The function info.
         """
-        full_func_name = validate_full_function_name(function_name)
-        if "*" in full_func_name.function_name:
+        full_func_name = FullFunctionName.validate_full_function_name(function_name)
+        if "*" in full_func_name.function:
             raise ValueError(
                 "function name cannot include *, to get all functions in a catalog and schema, "
                 "please use list_functions API instead."
