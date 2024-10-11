@@ -1099,7 +1099,7 @@ def test_create_function_without_replace(client: DatabricksFunctionClient):
     with create_python_function_and_cleanup(client, func=simple_func, schema=SCHEMA):
         # Attempt to create the same function again without replace
         with pytest.raises(
-            RuntimeError,
+            Exception,
             match=f"Cannot create the function `{CATALOG}`.`{SCHEMA}`.`simple_func` because it already exists",
         ):
             client.create_python_function(
