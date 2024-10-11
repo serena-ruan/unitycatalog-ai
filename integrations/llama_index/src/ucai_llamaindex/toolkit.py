@@ -58,7 +58,8 @@ class UCFunctionToolkit(BaseModel):
         function_names (List[str]): List of function names in 'catalog.schema.function' format.
         tools_dict (Dict[str, FunctionTool]): A dictionary mapping function names to their corresponding tools.
         client (Optional[BaseFunctionClient]): The client used to manage functions.
-        return_direct (bool): Whether the tool should return the output directly.
+        return_direct (bool): Whether the tool should return the output directly. If this is set to True, the
+            response from an agent is returned directly, without being interpreted and rewritten by the agent.
     """
 
     function_names: List[str] = Field(
