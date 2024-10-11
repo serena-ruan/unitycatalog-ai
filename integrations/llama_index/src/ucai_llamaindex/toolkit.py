@@ -99,6 +99,15 @@ class UCFunctionToolkit(BaseModel):
             uc_function_to_tool_func=self.uc_function_to_llama_tool,
             return_direct=self.return_direct,
         )
+
+        # Since the 'properties' key is a reserved arg in LlamaIndex, disallow creating a tool with a
+        # function that has a 'properties' key in its input schema for LlamaIndex tool usage.
+        for tool_name, tool in self.tools_dict.items():
+            if "properties" in tool.metadata.fn_schema.model_fields:
+                raise ValueError(
+                    f"Function '{tool_name}' has a 'properties' key in its input schema. "
+                    "Cannot create a tool with this function due to LlamaIndex reserving this argument name."
+                )
         return self
 
     @staticmethod
@@ -149,6 +158,7 @@ class UCFunctionToolkit(BaseModel):
             Returns:
                 str: The JSON result of the function execution.
             """
+            kwargs = extract_properties(kwargs)
             args_json = json.loads(json.dumps(kwargs, default=str))
             result = client.execute_function(
                 function_name=function_name,
@@ -159,7 +169,7 @@ class UCFunctionToolkit(BaseModel):
         metadata = ToolMetadata(
             name=get_tool_name(function_name),
             description=function_info.comment or "",
-            fn_schema=fn_schema,
+            fn_schema=fn_schema.pydantic_model,
             return_direct=return_direct,
         )
 
@@ -178,3 +188,38 @@ class UCFunctionToolkit(BaseModel):
             List[FunctionTool]: A list of tools available in the toolkit.
         """
         return list(self.tools_dict.values())
+
+
+def extract_properties(data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Extracts the 'properties' dictionary from the input dictionary,
+    merges its key-value pairs into the top-level dictionary, and returns a new dictionary.
+
+    Args:
+        data (dict[str, Any]): The original dictionary possibly containing a 'properties' key.
+
+    Returns:
+        dict[str, Any]: A new dictionary with 'properties' merged into the top-level.
+
+    Raises:
+        TypeError: If 'properties' exists but is not a dictionary.
+        KeyError: If there are key collisions between 'properties' and the top-level keys.
+    """
+    if not isinstance(data, dict):
+        raise TypeError(f"Input must be a dictionary. Received: {type(data).__name__}")
+
+    properties = data.get("properties")
+    if properties is None:
+        return data
+
+    if not isinstance(properties, dict):
+        raise TypeError("'properties' must be a dictionary.")
+
+    if overlapping_keys := (set(data) - {"properties"}) & set(properties):
+        raise KeyError(
+            f"Key collision detected for keys: {', '.join(overlapping_keys)}. Cannot merge 'properties'."
+        )
+
+    merged_data = {**{k: v for k, v in data.items() if k != "properties"}, **properties}
+
+    return merged_data
