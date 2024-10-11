@@ -101,7 +101,7 @@ def get_tool_name(func_name: str) -> str:
     # OpenAI has constriant on the function name:
     # Must be a-z, A-Z, 0-9, or contain underscores and dashes, with a maximum length of 64.
     full_func_name = validate_full_function_name(func_name)
-    tool_name = f"{full_func_name.catalog_name}__{full_func_name.schema_name}__{full_func_name.function_name}"
+    tool_name = f"{full_func_name.catalog}__{full_func_name.schema}__{full_func_name.function}"
     if len(tool_name) > 64:
         _logger.warning(
             f"Function name {tool_name} is too long, truncating to 64 characters {tool_name[-64:]}."
@@ -161,12 +161,12 @@ def process_function_names(
     for name in function_names:
         if name not in tools_dict:
             full_func_name = validate_full_function_name(name)
-            if full_func_name.function_name == "*":
+            if full_func_name.function == "*":
                 token = None
                 while True:
                     functions = client.list_functions(
-                        catalog=full_func_name.catalog_name,
-                        schema=full_func_name.schema_name,
+                        catalog=full_func_name.catalog,
+                        schema=full_func_name.schema,
                         max_results=max_results,
                         page_token=token,
                     )

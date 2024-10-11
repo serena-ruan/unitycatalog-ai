@@ -369,7 +369,7 @@ class DatabricksFunctionClient(BaseFunctionClient):
             FunctionInfo: The function info.
         """
         full_func_name = validate_full_function_name(function_name)
-        if "*" in full_func_name.function_name:
+        if "*" in full_func_name.function:
             raise ValueError(
                 "function name cannot include *, to get all functions in a catalog and schema, "
                 "please use list_functions API instead."

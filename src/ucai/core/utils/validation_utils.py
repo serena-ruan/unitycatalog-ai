@@ -6,12 +6,12 @@ from ucai.core.utils.type_utils import is_time_type
 
 
 class FullFunctionName(NamedTuple):
-    catalog_name: str
-    schema_name: str
-    function_name: str
+    catalog: str
+    schema: str
+    function: str
 
     def __str__(self) -> str:
-        return f"{self.catalog_name.strip('`')}.{self.schema_name.strip('`')}.{self.function_name.strip('`')}"
+        return f"{self.catalog.strip('`')}.{self.schema.strip('`')}.{self.function.strip('`')}"
 
 
 def validate_full_function_name(function_name: str) -> FullFunctionName:
@@ -29,7 +29,7 @@ def validate_full_function_name(function_name: str) -> FullFunctionName:
         raise ValueError(
             f"Invalid function name: {function_name}, expecting format <catalog_name>.<schema_name>.<function_name>."
         )
-    return FullFunctionName(catalog_name=splits[0], schema_name=splits[1], function_name=splits[2])
+    return FullFunctionName(catalog=splits[0], schema=splits[1], function=splits[2])
 
 
 def is_base64_encoded(s: str) -> bool:
