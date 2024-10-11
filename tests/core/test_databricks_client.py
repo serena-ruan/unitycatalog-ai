@@ -5,6 +5,7 @@ import re
 import time
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, NamedTuple, Union
+from unittest.mock import patch
 
 import pytest
 from databricks.sdk.service.catalog import (
@@ -22,6 +23,7 @@ from databricks.sdk.service.catalog import (
 from ucai.core.databricks import (
     DatabricksFunctionClient,
     extract_function_name,
+    retry_on_session_expiration,
 )
 from ucai.core.envs.databricks_env_vars import (
     UCAI_DATABRICKS_SERVERLESS_EXECUTION_RESULT_ROW_LIMIT,
@@ -1093,3 +1095,55 @@ def test_create_function_without_replace(client: DatabricksFunctionClient):
             client.create_python_function(
                 func=simple_func, catalog=CATALOG, schema=SCHEMA, replace=False
             )
+
+
+class MockClient:
+    def __init__(self):
+        self.call_count = 0
+        self.refresh_count = 0
+
+    @retry_on_session_expiration()
+    def mock_function(self):
+        if self.call_count < 2:
+            self.call_count += 1
+            raise Exception("session_id is no longer usable")
+        return "Success"
+
+    def refresh_client_and_session(self):
+        self.refresh_count += 1
+
+
+def test_retry_on_session_expiration_decorator():
+    # Arrange
+    client = MockClient()
+
+    # Act
+    result = client.mock_function()
+
+    # Assert
+    assert result == "Success"
+    assert client.call_count == 2  # Retries twice before succeeding
+    assert client.refresh_count == 2  # Refreshes twice before succeeding
+
+
+@patch("time.sleep", return_value=None)  # Mock time.sleep to avoid actual delays during testing
+def test_retry_on_session_expiration_decorator_exceeds_attempts(mock_sleep):
+    # Arrange
+    client = MockClient()
+
+    # Modify the mock_function to always raise an exception to simulate exceeding retries
+    @retry_on_session_expiration()
+    def mock_function_always_fail(self):
+        self.call_count += 1
+        raise Exception("session_id is no longer usable")
+
+    # Replace the original method with the one that always fails
+    client.mock_function = mock_function_always_fail.__get__(client)
+
+    # Act & Assert
+    with pytest.raises(RuntimeError, match="Failed to execute mock_function_always_fail after"):
+        client.mock_function()
+
+    assert client.call_count == 5  # Retries the maximum allowed attempts (5 by default)
+    assert client.refresh_count == 4  # Refreshes four times before giving up
+    assert mock_sleep.call_count == 4  # Should call sleep between retries (maximum attempts - 1)

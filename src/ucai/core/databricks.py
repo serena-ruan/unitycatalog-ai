@@ -1,4 +1,5 @@
 import base64
+import functools
 import json
 import logging
 import re
@@ -13,6 +14,7 @@ from typing_extensions import override
 from ucai.core.client import BaseFunctionClient, FunctionExecutionResult
 from ucai.core.envs.databricks_env_vars import (
     UCAI_DATABRICKS_SERVERLESS_EXECUTION_RESULT_ROW_LIMIT,
+    UCAI_DATABRICKS_SESSION_RETRY_MAX_ATTEMPTS,
     UCAI_DATABRICKS_WAREHOUSE_EXECUTE_FUNCTION_BYTE_LIMIT,
     UCAI_DATABRICKS_WAREHOUSE_EXECUTE_FUNCTION_ROW_LIMIT,
     UCAI_DATABRICKS_WAREHOUSE_EXECUTE_FUNCTION_WAIT_TIMEOUT,
@@ -48,6 +50,8 @@ DATABRICKS_CONNECT_VERSION_NOT_SUPPORTED_ERROR_MESSAGE = (
     f"`pip install databricks-connect=={DATABRICKS_CONNECT_SUPPORTED_VERSION}` "
     "to use serverless compute in Databricks. Please note this requires python>=3.10."
 )
+SESSION_RETRY_BASE_DELAY = 1
+SESSION_RETRY_MAX_DELAY = 32
 
 _logger = logging.getLogger(__name__)
 
@@ -111,6 +115,55 @@ def extract_function_name(sql_body: str) -> str:
     )
 
 
+def retry_on_session_expiration():
+    """
+    Decorator to retry a method upon session expiration errors with exponential backoff.
+
+    Args:
+        max_attempts (int): Maximum number of retry attempts.
+        base_delay (int): Base delay in seconds for exponential backoff.
+        max_delay (int): Maximum delay in seconds between retries.
+    """
+    max_attempts = int(UCAI_DATABRICKS_SESSION_RETRY_MAX_ATTEMPTS.get())
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return func(self, *args, **kwargs)
+                except Exception as e:
+                    error_message = str(e)
+                    if (
+                        "session_id is no longer usable" in error_message
+                        or "BAD_REQUEST: session_id is no longer usable" in error_message
+                    ):
+                        if attempt < max_attempts:
+                            delay = min(
+                                SESSION_RETRY_BASE_DELAY * (2 ** (attempt - 1)),
+                                SESSION_RETRY_MAX_DELAY,
+                            )
+                            _logger.warning(
+                                f"Session expired. Attempt {attempt} of {max_attempts}. Refreshing session and retrying after {delay} seconds..."
+                            )
+                            self.refresh_client_and_session()
+                            time.sleep(delay)
+                            continue
+                        else:
+                            _logger.error(
+                                f"Failed to execute {func.__name__} after {max_attempts} attempts."
+                            )
+                            raise RuntimeError(
+                                f"Failed to execute {func.__name__} after {max_attempts} attempts due to session expiration."
+                            ) from e
+                    else:
+                        raise
+
+        return wrapper
+
+    return decorator
+
+
 class DatabricksFunctionClient(BaseFunctionClient):
     """
     Databricks UC function calling client
@@ -168,6 +221,14 @@ class DatabricksFunctionClient(BaseFunctionClient):
                 "https://docs.databricks.com/en/admin/sql/serverless.html#enable-serverless-sql-warehouses."
             )
 
+    def refresh_client_and_session(self):
+        _logger.info("Refreshing Databricks client and Spark session due to session expiration.")
+        self.client = get_default_databricks_workspace_client(profile=self.profile)
+        self.stop_spark_session()
+        self.set_default_spark_session()
+        self.spark = _try_get_spark_session_in_dbr()
+
+    @retry_on_session_expiration()
     @override
     def create_function(
         self,
@@ -197,6 +258,7 @@ class DatabricksFunctionClient(BaseFunctionClient):
         # return self.client.functions.create(function_info)
         raise ValueError("sql_function_body must be provided.")
 
+    @retry_on_session_expiration()
     @override
     def create_python_function(
         self, *, func: Callable[..., Any], catalog: str, schema: str, replace: bool = False
@@ -478,6 +540,7 @@ class DatabricksFunctionClient(BaseFunctionClient):
         else:
             return self._execute_uc_functions_with_serverless(function_info, parameters)
 
+    @retry_on_session_expiration()
     def _execute_uc_functions_with_warehouse(
         self, function_info: "FunctionInfo", parameters: Dict[str, Any]
     ) -> FunctionExecutionResult:
@@ -570,6 +633,7 @@ class DatabricksFunctionClient(BaseFunctionClient):
                 format="CSV", value=csv_buffer.getvalue(), truncated=truncated
             )
 
+    @retry_on_session_expiration()
     def _execute_uc_functions_with_serverless(
         self, function_info: "FunctionInfo", parameters: Dict[str, Any]
     ) -> FunctionExecutionResult:
