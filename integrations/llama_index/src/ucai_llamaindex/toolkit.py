@@ -99,6 +99,7 @@ class UCFunctionToolkit(BaseModel):
                     f"Function '{tool_name}' has a 'properties' key in its input schema. "
                     "Cannot create a tool with this function due to LlamaIndex reserving this argument name."
                 )
+        return self
 
     @staticmethod
     def uc_function_to_llama_tool(
@@ -180,44 +181,36 @@ class UCFunctionToolkit(BaseModel):
         return list(self.tools_dict.values())
 
 
-def extract_properties(data: dict) -> dict:
+def extract_properties(data: dict[str, Any]) -> dict[str, Any]:
     """
     Extracts the 'properties' dictionary from the input dictionary,
     merges its key-value pairs into the top-level dictionary, and returns a new dictionary.
 
     Args:
-        data (dict): The original dictionary possibly containing a 'properties' key.
+        data (dict[str, Any]): The original dictionary possibly containing a 'properties' key.
 
     Returns:
-        dict: A new dictionary with 'properties' merged into the top-level.
+        dict[str, Any]: A new dictionary with 'properties' merged into the top-level.
 
     Raises:
         TypeError: If 'properties' exists but is not a dictionary.
         KeyError: If there are key collisions between 'properties' and the top-level keys.
     """
     if not isinstance(data, dict):
-        raise TypeError("Input must be a dictionary.")
+        raise TypeError(f"Input must be a dictionary. Received: {type(data).__name__}")
 
-    if "properties" not in data:
-        return data.copy()
-
-    properties = data["properties"]
+    properties = data.get("properties")
+    if properties is None:
+        return data
 
     if not isinstance(properties, dict):
         raise TypeError("'properties' must be a dictionary.")
 
-    top_level_keys = set(data.keys()) - {"properties"}
-    properties_keys = set(properties.keys())
-    overlapping_keys = top_level_keys & properties_keys
-
-    if overlapping_keys:
-        conflict_keys = ", ".join(overlapping_keys)
+    if overlapping_keys := (set(data) - {"properties"}) & set(properties):
         raise KeyError(
-            f"Key collision detected for keys: {conflict_keys}. Cannot merge 'properties'."
+            f"Key collision detected for keys: {', '.join(overlapping_keys)}. Cannot merge 'properties'."
         )
 
-    merged_data = {k: v for k, v in data.items() if k != "properties"}
-
-    merged_data.update(properties)
+    merged_data = {**{k: v for k, v in data.items() if k != "properties"}, **properties}
 
     return merged_data

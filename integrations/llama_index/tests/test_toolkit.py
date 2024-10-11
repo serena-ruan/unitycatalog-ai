@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from typing import Any, Dict
 from unittest import mock
 
@@ -306,30 +307,28 @@ def test_extract_properties_empty_properties():
     assert extract_properties(data) == expected
 
 
-def test_extract_properties_key_collision():
+@pytest.mark.parametrize(
+    "properties, expected_keys",
+    [
+        ({"location": "abc", "metadata": "conflict"}, "metadata"),
+        ({"location": "abc", "metadata": "conflict", "name": "conflict_name"}, "metadata, name"),
+    ],
+)
+def test_extract_properties_key_collisions(properties, expected_keys):
     data = {
-        "properties": {"location": "abc", "metadata": "conflict"},
+        "properties": properties,
         "metadata": "something",
         "name": "something else",
     }
 
-    with pytest.raises(
-        KeyError, match="Key collision detected for keys: metadata. Cannot merge 'properties'."
-    ):
-        extract_properties(data)
+    expected_keys_set = set(expected_keys.split(", "))
+    pattern = (
+        re.escape("Key collision detected for keys: ")
+        + ".*".join(re.escape(key) for key in expected_keys_set)
+        + r".*Cannot merge 'properties'."
+    )
 
-
-def test_extract_properties_multiple_collisions():
-    data = {
-        "properties": {"location": "abc", "metadata": "conflict", "name": "conflict_name"},
-        "metadata": "something",
-        "name": "something else",
-    }
-
-    with pytest.raises(
-        KeyError,
-        match="Key collision detected for keys",
-    ):
+    with pytest.raises(KeyError, match=pattern):
         extract_properties(data)
 
 
@@ -351,18 +350,12 @@ def test_extract_properties_nested_properties():
 
 
 def test_extract_properties_non_dict_input():
-    data = ["not", "a", "dict"]
-
     with pytest.raises(TypeError, match="Input must be a dictionary."):
-        extract_properties(data)
+        extract_properties(0)
 
 
 @requires_databricks
 def test_toolkit_creation_with_properties_argument(client):
-    """
-    Test that toolkit creation fails when the function has a 'properties' argument.
-    """
-
     def func_with_properties(properties: dict[str, str]) -> str:
         """
         A function that has 'properties' as an argument.
@@ -448,13 +441,9 @@ def test_uc_function_to_llama_tool_mocked():
 
     with (
         mock.patch(
-            "ucai.core.utils.function_processing_utils.generate_function_input_params_schema",
-            return_value=mock_fn_schema,
-        ),
-        mock.patch(
             "ucai_llamaindex.toolkit.validate_or_set_default_client",
             return_value=mock_client,
-        ),
+        ) as mock_validate_client,
     ):
         tool = UCFunctionToolkit.uc_function_to_llama_tool(
             function_name="catalog.schema.test_function", client=mock_client, return_direct=True
@@ -464,6 +453,12 @@ def test_uc_function_to_llama_tool_mocked():
         input_args = {"x": "some_string"}
         result = json.loads(tool.fn(**input_args))["value"]
         assert result == "some_string"
+        mock_validate_client.assert_called_once()
+        mock_client.get_function.assert_called_once_with("catalog.schema.test_function")
+        mock_client.to_dict.assert_called_once()
+        mock_client.execute_function.assert_called_once_with(
+            function_name="catalog.schema.test_function", parameters=input_args
+        )
 
 
 def test_toolkit_with_invalid_function_input_mocked():
@@ -480,13 +475,9 @@ def test_toolkit_with_invalid_function_input_mocked():
 
     with (
         mock.patch(
-            "ucai.core.utils.function_processing_utils.generate_function_input_params_schema",
-            return_value=mock_fn_schema,
-        ),
-        mock.patch(
             "ucai_llamaindex.toolkit.validate_or_set_default_client",
             return_value=mock_client,
-        ),
+        ) as mock_validate_client,
     ):
         tool = UCFunctionToolkit.uc_function_to_llama_tool(
             function_name="catalog.schema.test_function", client=mock_client, return_direct=True
@@ -500,3 +491,9 @@ def test_toolkit_with_invalid_function_input_mocked():
 
         with pytest.raises(ValueError, match="Extra parameters provided that are not defined"):
             tool.fn(**invalid_inputs)
+        mock_validate_client.assert_called_once()
+        mock_client.get_function.assert_called_once_with("catalog.schema.test_function")
+        mock_client.to_dict.assert_called_once()
+        mock_client.execute_function.assert_called_once_with(
+            function_name="catalog.schema.test_function", parameters=invalid_inputs
+        )
