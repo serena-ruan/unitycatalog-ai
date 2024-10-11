@@ -547,7 +547,11 @@ def test_list_functions(client: DatabricksFunctionClient):
         ("CREATE FUNCTION IF NOT EXISTS a.b.test() RETURN 123", "a.b.test"),
         (
             "CREATE FUNCTION `some-catalog`.`some-schema`.`test_function`() RETURN 123",
-            "`some-catalog`.`some-schema`.`test_function`",
+            "some-catalog.some-schema.test_function",
+        ),
+        (
+            "CREATE FUNCTION `奇怪的catalog`.`some-schema`.test_function() RETURN 123",
+            "奇怪的catalog.some-schema.test_function",
         ),
     ],
 )
@@ -1094,7 +1098,10 @@ def test_create_function_without_replace(client: DatabricksFunctionClient):
     # Create the function for the first time
     with create_python_function_and_cleanup(client, func=simple_func, schema=SCHEMA):
         # Attempt to create the same function again without replace
-        with pytest.raises(RuntimeError, match="Failed to create function for simple_func"):
+        with pytest.raises(
+            RuntimeError,
+            match=f"Cannot create the function `{CATALOG}`.`{SCHEMA}`.`simple_func` because it already exists",
+        ):
             client.create_python_function(
                 func=simple_func, catalog=CATALOG, schema=SCHEMA, replace=False
             )
