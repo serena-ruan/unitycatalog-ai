@@ -14,7 +14,7 @@ from ucai.core.utils.pydantic_utils import (
     PydanticType,
 )
 from ucai.core.utils.type_utils import UC_TYPE_JSON_MAPPING
-from ucai.core.utils.validation_utils import validate_full_function_name
+from ucai.core.utils.validation_utils import FullFunctionName
 
 _logger = logging.getLogger(__name__)
 
@@ -100,8 +100,8 @@ def uc_type_json_to_pydantic_type(
 def get_tool_name(func_name: str) -> str:
     # OpenAI has constriant on the function name:
     # Must be a-z, A-Z, 0-9, or contain underscores and dashes, with a maximum length of 64.
-    full_func_name = validate_full_function_name(func_name)
-    tool_name = f"{full_func_name.catalog}__{full_func_name.schema}__{full_func_name.function}"
+    full_func_name = FullFunctionName.validate_full_function_name(func_name)
+    tool_name = full_func_name.to_tool_name()
     if len(tool_name) > 64:
         _logger.warning(
             f"Function name {tool_name} is too long, truncating to 64 characters {tool_name[-64:]}."
@@ -160,7 +160,7 @@ def process_function_names(
     )
     for name in function_names:
         if name not in tools_dict:
-            full_func_name = validate_full_function_name(name)
+            full_func_name = FullFunctionName.validate_full_function_name(name)
             if full_func_name.function == "*":
                 token = None
                 while True:

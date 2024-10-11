@@ -13,23 +13,26 @@ class FullFunctionName(NamedTuple):
     def __str__(self) -> str:
         return f"{self.catalog.strip('`')}.{self.schema.strip('`')}.{self.function.strip('`')}"
 
+    def to_tool_name(self) -> str:
+        return str(self).replace(".", "__")
 
-def validate_full_function_name(function_name: str) -> FullFunctionName:
-    """
-    Validate the full function name follows the format <catalog_name>.<schema_name>.<function_name>.
+    @classmethod
+    def validate_full_function_name(cls, function_name: str) -> "FullFunctionName":
+        """
+        Validate the full function name follows the format <catalog_name>.<schema_name>.<function_name>.
 
-    Args:
-        function_name (str): The full function name.
+        Args:
+            function_name: The full function name.
 
-    Returns:
-        FullFunctionName: The parsed full function name.
-    """
-    splits = function_name.split(".")
-    if len(splits) != 3:
-        raise ValueError(
-            f"Invalid function name: {function_name}, expecting format <catalog_name>.<schema_name>.<function_name>."
-        )
-    return FullFunctionName(catalog=splits[0], schema=splits[1], function=splits[2])
+        Returns:
+            FullFunctionName: The parsed full function name.
+        """
+        splits = function_name.split(".")
+        if len(splits) != 3:
+            raise ValueError(
+                f"Invalid function name: {function_name}, expecting format <catalog_name>.<schema_name>.<function_name>."
+            )
+        return cls(catalog=splits[0], schema=splits[1], function=splits[2])
 
 
 def is_base64_encoded(s: str) -> bool:
