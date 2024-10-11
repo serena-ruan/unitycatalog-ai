@@ -25,7 +25,11 @@ from ucai.core.utils.type_utils import (
     convert_timedelta_to_interval_str,
     is_time_type,
 )
-from ucai.core.utils.validation_utils import validate_full_function_name, validate_param
+from ucai.core.utils.validation_utils import (
+    strip_backticks,
+    validate_full_function_name,
+    validate_param,
+)
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -104,7 +108,14 @@ def extract_function_name(sql_body: str) -> str:
 
     match = pattern.search(sql_body)
     if match:
-        return match.group(1)
+        result = match.group(1)
+        full_function_name = validate_full_function_name(result)
+        # backticks are only required in SQL, not in python APIs
+        return (
+            f"{strip_backticks(full_function_name.catalog_name)}."
+            f"{strip_backticks(full_function_name.schema_name)}."
+            f"{strip_backticks(full_function_name.function_name)}"
+        )
     raise ValueError(
         f"Could not extract function name from the sql body: {sql_body}.\nPlease "
         "make sure the sql body follows the syntax of CREATE FUNCTION "

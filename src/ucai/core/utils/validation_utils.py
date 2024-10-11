@@ -29,6 +29,12 @@ def validate_full_function_name(function_name: str) -> FullFunctionName:
     return FullFunctionName(catalog_name=splits[0], schema_name=splits[1], function_name=splits[2])
 
 
+def strip_backticks(s: str) -> str:
+    if s.startswith("`") and s.endswith("`"):
+        return s[1:-1]
+    return s
+
+
 def is_base64_encoded(s: str) -> bool:
     try:
         base64.b64decode(s, validate=True)
