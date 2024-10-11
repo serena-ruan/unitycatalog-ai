@@ -199,12 +199,11 @@ def test_toolkit_crewai_kwarg_passthrough(client):
         tool = UCFunctionToolkit.uc_function_to_crewai_tool(
             function_name="catalog.schema.test", 
             client=client, 
-            cache_function=lambda : False, 
-            result_as_answer=False, 
-            description_updated=False,
+            cache_function=lambda : True, 
+            result_as_answer=True, 
+            description_updated=True,
         )
 
-        assert tool.cache_function() is False
-        assert tool.result_as_answer is False
-        assert tool.description_updated is False
-
+        assert tool.cache_function()
+        assert tool.result_as_answer
+        assert tool.description_updated
