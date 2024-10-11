@@ -1,3 +1,9 @@
+import os
+
+os.environ["WAREHOUSE_ID"] = "475b94ddc7cd5211"
+os.environ["SCHEMA"] = "default"
+
+# MAIN
 import json
 import os
 from unittest import mock
@@ -24,7 +30,7 @@ from ucai.test_utils.function_utils import (
     create_function_and_cleanup,
 )
 
-from ucai_crewai.toolkit import _CREWAI_KWARGS_FROM_USER, UCFunctionToolkit
+from ucai_crewai.toolkit import UCFunctionToolkit
 
 SCHEMA = os.environ.get("SCHEMA", "ucai_crewai_test")
 
@@ -150,12 +156,15 @@ def test_uc_function_to_crewai_tool(client):
         ),
     ):
         tool = UCFunctionToolkit.uc_function_to_crewai_tool(
-            function_name=f"{CATALOG}.{SCHEMA}.test", client=client, cache_function=lambda: False
+            function_name=f"{CATALOG}.{SCHEMA}.test", client=client
         )
-        assert not tool.cache_function()
-
         result = json.loads(tool.fn(x="some_string"))["value"]
         assert result == "some_string"
+
+        # Check defaults for parameters not defined by UC
+        assert tool.cache_function(1, {1:1})
+        assert not tool.result_as_answer
+        assert not tool.description_updated
 
 
 def test_toolkit_with_invalid_function_input(client):
@@ -187,12 +196,15 @@ def test_toolkit_crewai_kwarg_passthrough(client):
         ),
         mock.patch.object(client, "get_function", return_value=mock_function_info),
     ):
-        values = [False, lambda: False, False]
-        kwargs = {k: v for k,v in zip(_CREWAI_KWARGS_FROM_USER, values)}
         tool = UCFunctionToolkit.uc_function_to_crewai_tool(
-            function_name="catalog.schema.test", client=client, **kwargs
+            function_name="catalog.schema.test", 
+            client=client, 
+            cache_function=lambda : False, 
+            result_as_answer=False, 
+            description_updated=False,
         )
 
-        for k in _CREWAI_KWARGS_FROM_USER:
-            assert hasattr(tool, k)
+        assert tool.cache_function() is False
+        assert tool.result_as_answer is False
+        assert tool.description_updated is False
 

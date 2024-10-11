@@ -157,25 +157,32 @@ Output
 ## Task: Call a tool1. **Identify the Objective**: The Simple Coder aims to create a program that prints "Hello Unity Catalog!" by utilizing the UnityCatalogTool.
 
 2. **Preparation for Tool Call**:
+   
    - Ensure that the Python environment is set and accessible to execute the code.
    - Prepare the code snippet that needs to be executed. In this case, the Python code is as follows:
+
      ```python
      print("Hello Unity Catalog!")
      ```
 
 3. **Utilize the UnityCatalogTool**:
+   
    - Call the `main__default__python_exec()` function from the UnityCatalogTool with the appropriate Python code as an argument.
    - This is done by structuring the call to the tool as follows:
+
      ```python
      result = UnityCatalogTool.main__default__python_exec(code="print('Hello Unity Catalog!')")
      ```
+
    - Ensure that the call captures the stdout that will print "Hello Unity Catalog!".
 
 4. **Execute and Capture Output**:
+   
    - Execute the code through the above function call in the specified environment.
    - The expected output is the string "Hello Unity Catalog!" which will be displayed on the console.
 
 5. **Confirmation**:
+   
    - Check the return value of the tool call to ensure it executed correctly.
    - Log or print the result confirming the tool invocation was successful.
 

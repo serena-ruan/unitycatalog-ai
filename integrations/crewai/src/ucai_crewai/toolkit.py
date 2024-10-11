@@ -14,10 +14,6 @@ from ucai.core.utils.function_processing_utils import (
 
 _logger = logging.getLogger(__name__)
 
-# NB: some CrewAI arguments cannot be inferred from the UC payload and instead must come from the 
-# user. We dynamically pull these arguments from kwargs based on keyword name.
-_CREWAI_KWARGS_FROM_USER = ["description_updated", "cache_function", "result_as_answer"]
-
 class UnityCatalogTool(CrewAIBaseTool):
     """
     A tool class that integrates Unity Catalog functions into a tool structure.
@@ -56,8 +52,15 @@ class UCFunctionToolkit(BaseModel):
     
     Attributes:
         function_names (List[str]): List of function names in 'catalog.schema.function' format.
-        tools_dict (Dict[str, FunctionTool]): A dictionary mapping function names to their corresponding tools.
+        tools_dict (Dict[str, FunctionTool]): A dictionary mapping function names to their 
+            corresponding tools.
         client (Optional[BaseFunctionClient]): The client used to manage functions.
+        description_updated (Optional[Bool]): Flag to check if the description has been updated.
+        cache_function (Optional[Callable]): Function that will be used to determine if the tool
+            should be cached, should return a boolean. If None, the tool will be cached.
+        result_as_answer (Optional[Bool]): Flag to check if the tool should be the final 
+            agent answer.
+
     """
 
     function_names: List[str] = Field(
@@ -72,6 +75,24 @@ class UCFunctionToolkit(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    # CrewAI parameters, which can be found in the link below
+    # https://github.com/crewAIInc/crewAI-tools/blob/main/crewai_tools/tools/base_tool.py#L21
+    description_updated: Optional[bool] = Field(
+        default=False, 
+        description="Flag to check if the description has been updated."
+    )
+    cache_function: Optional[Callable] = Field(
+        default=lambda _args, _result: True, 
+        description=(
+            "Function that will be used to determine if the tool should be cached, should return "
+            "a boolean. If None, the tool will be cached."
+        )
+    )
+    result_as_answer: Optional[bool] = Field(
+        default=False, 
+        description="Flag to check if the tool should be the final agent answer."
+    ) 
+
     @model_validator(mode="after")
     def validate_toolkit(self) -> "UCFunctionToolkit":
         self.client = validate_or_set_default_client(self.client)
@@ -84,8 +105,12 @@ class UCFunctionToolkit(BaseModel):
             tools_dict=self.tools_dict,
             client=self.client,
             uc_function_to_tool_func=self.uc_function_to_crewai_tool,
+            description=self.description_updated,
+            cache_function=self.cache_function,
+            result_as_answer=self.result_as_answer,
         )
         return self
+
 
     @staticmethod
     def uc_function_to_crewai_tool(
@@ -93,6 +118,9 @@ class UCFunctionToolkit(BaseModel):
         client: Optional[BaseFunctionClient] = None,
         function_name: Optional[str] = None,
         function_info: Optional[Any] = None,
+        description_updated: Optional[bool] = False,
+        cache_function: Optional[Callable] = lambda _args, _result: True,
+        result_as_answer: Optional[bool] = False,
         **kwargs,
     ) -> CrewAIBaseTool:
         """
@@ -102,11 +130,11 @@ class UCFunctionToolkit(BaseModel):
             client (Optional[BaseFunctionClient]): Client for executing the function.
             function_name (Optional[str]): Name of the function to convert.
             function_info (Optional[Any]): Detailed information of the function.
-
-        Note:
-            The following keys are popped from `kwargs` and used to instantiate 
-            the CrewAI BaseTool: ["description_updated", "cache_function", "result_as_answer"].
-            These values are not passed to the Unity Catalog function.
+            description_updated (Optional[Bool]): Flag to check if the description has been updated.
+            cache_function (Optional[Callable]): Function that will be used to determine if the tool
+                should be cached, should return a boolean. If None, the tool will be cached.
+            result_as_answer (Optional[Bool]): Flag to check if the tool should be the final 
+                agent answer.
 
         Returns:
             CrewAIBaseTool: A tool representation of the Unity Catalog function.
@@ -123,14 +151,6 @@ class UCFunctionToolkit(BaseModel):
         else:
             raise ValueError("Either function_name or function_info should be provided.")
             
-        crewai_kwargs_from_user = {}
-        for k in _CREWAI_KWARGS_FROM_USER:
-            if k in kwargs:
-                _logger.info(
-                    f"{k} is inferred to be a CrewAI BaseTool argument and will not be passed "
-                    "to the Unity Catalog function."
-                )
-                crewai_kwargs_from_user[k] = kwargs.pop(k)
 
         def func(**kwargs: Any) -> str:
             args_json = json.loads(json.dumps(kwargs, default=str))
@@ -155,7 +175,10 @@ class UCFunctionToolkit(BaseModel):
             name=get_tool_name(function_name),
             description=function_info.comment or "",
             args_schema=_BaseModelWrapper,
-            **crewai_kwargs_from_user 
+            # CrewAI params from user
+            description_updated=description_updated,
+            cache_function=cache_function,
+            result_as_answer=result_as_answer,
         )
 
     @property
