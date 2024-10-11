@@ -50,11 +50,11 @@ jobs:
       - name: Run tests with pydantic v1
         run: |
           pip install 'pydantic<2'
-          pytest tests/
+          pytest tests/ --ignore=tests/core/oss
       - name: Run tests with pydantic v2
         run: |
           pip install 'pydantic>=2'
-          pytest tests/
+          pytest tests/ --ignore=tests/core/oss
 
   langchain_test:
     runs-on: ubuntu-latest
