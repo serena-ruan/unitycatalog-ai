@@ -45,7 +45,7 @@ class UnityCatalogTool(FunctionTool):
     def __repr__(self) -> str:
         return (
             "UnityCatalogTool("
-            + ", ".join([f"{k}={v}" for k, v in asdict(self.metadata).items() if v])
+            + ", ".join(f"{k}={v!r}" for k, v in asdict(self.metadata).items() if v is not None)
             + ")"
         )
 

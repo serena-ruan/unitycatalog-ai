@@ -155,7 +155,9 @@ def test_uc_function_to_llama_tool(client):
         assert tool.metadata.return_direct
 
         # Validate tool repr
-        assert str(tool).startswith(f"UnityCatalogTool(name={CATALOG}__{SCHEMA}__test,")
+        assert str(tool).startswith(
+            f"UnityCatalogTool(description='', name='{CATALOG}__{SCHEMA}__test',"
+        )
 
         result = json.loads(tool.fn(x="some_string"))["value"]
         assert result == "some_string"
