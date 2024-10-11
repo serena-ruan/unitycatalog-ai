@@ -89,12 +89,14 @@ def extract_function_name(sql_body: str) -> str:
     Extract function name from the sql body.
     CREATE FUNCTION syntax reference: https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-ddl-create-sql-function.html#syntax
     """
+    # NOTE: catalog/schema/function names follow guidance here:
+    # https://docs.databricks.com/en/sql/language-manual/sql-ref-names.html#catalog-name
     pattern = re.compile(
         r"""
         CREATE\s+(?:OR\s+REPLACE\s+)?      # Match 'CREATE OR REPLACE' or just 'CREATE'
         (?:TEMPORARY\s+)?                  # Match optional 'TEMPORARY'
         FUNCTION\s+(?:IF\s+NOT\s+EXISTS\s+)?  # Match 'FUNCTION' and optional 'IF NOT EXISTS'
-        ([\w.]+)                           # Capture the function name (including schema if present)
+        ([^ /.]+\.[^ /.]+\.[^ /.]+)          # Capture the function name (including schema if present)
         \s*\(                              # Match opening parenthesis after function name
     """,
         re.IGNORECASE | re.VERBOSE,
@@ -104,7 +106,7 @@ def extract_function_name(sql_body: str) -> str:
     if match:
         return match.group(1)
     raise ValueError(
-        f"Could not extract function name from the sql body {sql_body}.\nPlease "
+        f"Could not extract function name from the sql body: {sql_body}.\nPlease "
         "make sure the sql body follows the syntax of CREATE FUNCTION "
         "statement in Databricks: "
         "https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-ddl-create-sql-function.html#syntax."
