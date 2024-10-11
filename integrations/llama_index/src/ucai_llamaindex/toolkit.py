@@ -1,4 +1,5 @@
 import json
+from dataclasses import asdict
 from typing import Any, Callable, Dict, List, Optional
 
 from llama_index.core.tools import FunctionTool
@@ -40,6 +41,13 @@ class UnityCatalogTool(FunctionTool):
         """
         super().__init__(*args, fn=fn, metadata=metadata, **kwargs)
         self.client_config = client_config
+
+    def __repr__(self) -> str:
+        return (
+            f"UnityCatalogTool("
+            + ", ".join([f"{k}={v}" for k, v in asdict(self.metadata).items() if v])
+            + ")"
+        )
 
 
 class UCFunctionToolkit(BaseModel):
