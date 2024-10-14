@@ -19,6 +19,7 @@ from ucai.core.client import (
 from ucai.core.utils.function_processing_utils import get_tool_name
 from ucai.test_utils.client_utils import (
     USE_SERVERLESS,
+    client,  # noqa: F401
     get_client,
     requires_databricks,
     set_default_client,
@@ -27,6 +28,13 @@ from ucai.test_utils.function_utils import (
     CATALOG,
     create_function_and_cleanup,
 )
+
+try:
+    # v2
+    from pydantic.v1.error_wrappers import ValidationError
+except ImportError:
+    # v1
+    from pydantic.error_wrappers import ValidationError
 
 from tests.helper_functions import wrap_output
 from ucai_langchain.toolkit import UCFunctionToolkit
@@ -195,3 +203,17 @@ def test_langgraph_agents(monkeypatch, use_serverless):
                 {"messages": [{"role": "user", "content": "What is the result of 2**10?"}]}
             )
         assert "1024" in result
+
+
+def test_toolkit_fields_validation(client):
+    def test_tool():
+        return "abc"
+
+    with pytest.raises(ValidationError, match=r"str type expected"):
+        UCFunctionToolkit(client=client, function_names=[test_tool])
+
+    with pytest.raises(ValidationError, match=r"Invalid function name"):
+        UCFunctionToolkit(client=client, function_names=["test_tool"])
+
+    with pytest.raises(ValidationError, match=r"instance of BaseFunctionClient expected"):
+        UCFunctionToolkit(client=test_tool, function_names=[])

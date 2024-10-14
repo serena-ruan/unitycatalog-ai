@@ -37,7 +37,7 @@ class UCFunctionToolkit(BaseModel):
     class Config:
         arbitrary_types_allowed = True
 
-    @root_validator
+    @root_validator(skip_on_failure=True)
     def validate_toolkit(cls, values) -> Dict[str, Any]:
         client = validate_or_set_default_client(values.get("client"))
         values["client"] = client
