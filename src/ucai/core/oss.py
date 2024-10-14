@@ -1,15 +1,16 @@
 import datetime
 import decimal
 import logging
-from typing import Any, Callable, Dict, List, NamedTuple, Optional
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Union
 
 from typing_extensions import override
 
 from ucai.core.client import BaseFunctionClient, FunctionExecutionResult
 from ucai.core.paged_list import PagedList
+from ucai.core.utils.callable_utils import ReturnParamFormat, parse_callable
 from ucai.core.utils.type_utils import column_type_to_python_type
 from ucai.core.utils.validation_utils import FullFunctionName
-from unitycatalog import Unitycatalog
+from unitycatalog import InternalServerError, Unitycatalog
 from unitycatalog.types.function_create_params import FunctionInfo as CreateFunctionInfo
 from unitycatalog.types.function_create_params import (
     FunctionInfoInputParams,
@@ -89,8 +90,9 @@ class UnitycatalogFunctionClient(BaseFunctionClient):
         full_function_name: str,
         routine_definition: str,
         data_type: str,
-        parameters: Optional[List[FunctionInfoInputParamsParameter]] = None,
+        parameters: Optional[List[Union[FunctionInfoInputParamsParameter, Dict[str, str]]]] = None,
         timeout: Optional[float] = None,
+        replace: bool = False,
         **kwargs,
     ) -> FunctionInfo:
         """
@@ -107,12 +109,14 @@ class UnitycatalogFunctionClient(BaseFunctionClient):
             timeout: The timeout in seconds.
         """
         function_name = FullFunctionName.validate_full_function_name(full_function_name)
-        for param in parameters:
-            validate_input_parameter(param)
+        parameters = [validate_input_parameter(param) for param in parameters]
         if data_type not in ALLOWED_DATA_TYPES:
             raise ValueError(
                 f"Invalid data_type {data_type}, allowed values are {ALLOWED_DATA_TYPES}."
             )
+        if replace and self.get_function(full_function_name, timeout=timeout):
+            _logger.info(f"Function {full_function_name} already exists, replacing it.")
+            self.uc.functions.delete(full_function_name, timeout=timeout)
         function_info = CreateFunctionInfo(
             catalog_name=function_name.catalog,
             schema_name=function_name.schema,
@@ -132,11 +136,28 @@ class UnitycatalogFunctionClient(BaseFunctionClient):
     def create_python_function(
         self, *, func: Callable[..., Any], catalog: str, schema: str, replace: bool = False
     ) -> FunctionInfo:
-        pass
+        if not callable(func):
+            raise ValueError("The provided function is not callable.")
+        parsed_callable = parse_callable(
+            func, return_format=ReturnParamFormat.FUNCTION_INFO_INPUT_PARAMETER_DICT
+        )
+        return self.create_function(
+            full_function_name=f"{catalog}.{schema}.{parsed_callable.function_name}",
+            routine_definition=parsed_callable.function_body,
+            data_type=parsed_callable.return_type,
+            parameters=parsed_callable.input_params,
+            replace=replace,
+        )
 
     @override
     def get_function(self, function_name: str, timeout: Optional[float] = None) -> FunctionInfo:
-        return self.uc.functions.retrieve(function_name, timeout=timeout)
+        try:
+            return self.uc.functions.retrieve(function_name, timeout=timeout)
+        except InternalServerError as e:
+            _logger.warning(
+                f"Failed to retrieve function {function_name} from Unity Catalog, the function may not exist. "
+                f"Exception: {e}"
+            )
 
     @override
     def list_functions(
@@ -174,6 +195,8 @@ class UnitycatalogFunctionClient(BaseFunctionClient):
     ) -> FunctionExecutionResult:
         if function_info.name in self.func_cache:
             result = self.func_cache[function_info.name](**parameters)
+
+            return FunctionExecutionResult(format="SCALAR", value=str(result))
         else:
             python_function = dynamic_construct_python_function(function_info)
             exec(python_function.function_def, self.func_cache)
@@ -214,15 +237,47 @@ def dynamic_construct_python_function(function_info: FunctionInfo) -> FunctionDe
     return FunctionDefinition(function_def=func_def, function_head=function_head)
 
 
-def validate_input_parameter(parameter: FunctionInfoInputParamsParameter) -> None:
+def validate_input_parameter(
+    parameter: Union[FunctionInfoInputParamsParameter, Dict[str, str]],
+) -> FunctionInfoInputParamsParameter:
+    """
+    Validate the input parameter and convert it to FunctionInfoInputParamsParameter.
+
+    Args:
+        parameter: The input parameter to validate. If it is a dict, it will be converted to FunctionInfoInputParamsParameter.
+
+    Returns:
+        The validated FunctionInfoInputParamsParameter.
+    """
+    if isinstance(parameter, dict):
+        parameter = FunctionInfoInputParamsParameter(**parameter)
+    elif not isinstance(parameter, FunctionInfoInputParamsParameter):
+        raise TypeError(
+            f"Input parameter should be either a dict or an instance of "
+            f"FunctionInfoInputParamsParameter, but got {type(parameter)}"
+        )
     # NOTE: position is not required, even position collision is allowed
     if missing_keys := {"name", "type_name", "type_text"} - parameter.keys():
         raise ValueError(f"Missing keys in input parameter {parameter}: {missing_keys}")
-    if parameter["type_name"] not in ALLOWED_DATA_TYPES:
+    type_name = parameter["type_name"]
+    # parameters extracted from python type hints could contain internal types as well
+    # we don't need internal types in `type_name` field
+    if type_name.startswith("MAP"):
+        parameter["type_name"] = "MAP"
+    elif type_name.startswith("ARRAY"):
+        parameter["type_name"] = "ARRAY"
+    elif type_name.startswith("STRUCT"):
+        parameter["type_name"] = "STRUCT"
+    elif type_name.startswith("DECIMAL"):
+        parameter["type_name"] = "DECIMAL"
+    elif type_name.startswith("INTERVAL"):
+        parameter["type_name"] = "INTERVAL"
+    elif type_name not in ALLOWED_DATA_TYPES:
         raise ValueError(
-            f"Invalid type_name {parameter['type_name']} in input parameter "
+            f"Invalid type_name {type_name} in input parameter "
             f"{parameter}, allowed values are {ALLOWED_DATA_TYPES}."
         )
+    return parameter
 
 
 def validate_param(param: Any, column_type: str, param_type_text: str) -> None:
