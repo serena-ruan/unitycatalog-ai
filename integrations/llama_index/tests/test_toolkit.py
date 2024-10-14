@@ -377,7 +377,7 @@ def test_toolkit_creation_with_properties_argument(client):
         client, func=func_with_properties, schema=SCHEMA
     ) as func_obj:
         with pytest.raises(ValidationError, match="has a 'properties' argument which conflicts"):
-            UCFunctionToolkit(function_names=[func_obj.full_function_name])
+            UCFunctionToolkit(function_names=[func_obj.full_function_name], client=client)
 
 
 def test_toolkit_creation_without_properties_argument_mocked():
