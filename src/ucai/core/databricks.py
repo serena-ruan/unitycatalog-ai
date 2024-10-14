@@ -654,6 +654,11 @@ class DatabricksFunctionClient(BaseFunctionClient):
                     format="CSV", value=csv_buffer.getvalue(), truncated=truncated
                 )
         except Exception as e:
+            if (
+                "session_id is no longer usable"
+                or "BAD_REQUEST: session_id is no longer usable" in str(e)
+            ):
+                raise
             raise RuntimeError(
                 f"Failed to execute function with function name: {function_info.full_name}"
             ) from e
