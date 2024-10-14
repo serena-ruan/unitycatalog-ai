@@ -1,5 +1,8 @@
 from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
+
+PLACEHOLDER = "..."
 
 
 @dataclass
@@ -7,11 +10,11 @@ class DocstringInfo:
     """Dataclass to store parsed docstring information."""
 
     description: str
-    params: Optional[dict[str, str]]
+    params: Optional[dict[str, Optional[str]]]
     returns: Optional[str]
 
 
-class State:
+class State(Enum):
     DESCRIPTION = "DESCRIPTION"
     ARGS = "ARGS"
     RETURNS = "RETURNS"
@@ -39,143 +42,113 @@ def parse_docstring(docstring: str) -> DocstringInfo:
             "Docstring is empty. Please provide a docstring with a function description."
         )
 
-    description_lines = []
-    parsed_params = {}
-    returns = None
-    current_param = None
-    param_description_lines = []
-    return_description_lines = []
+    sections = _split_docstring_sections(docstring)
+    description = _parse_description(sections["description"])
+    params = _parse_params(sections["args"])
+    returns = _parse_returns(sections["returns"])
 
-    state = State.DESCRIPTION
+    return DocstringInfo(description=description, params=params, returns=returns)
+
+
+def _split_docstring_sections(docstring: str) -> dict[str, list[str]]:
+    """Splits the docstring into sections: description, args, and returns."""
     lines = docstring.strip().splitlines()
-    lines.append("")  # Add an empty line to ensure the last param is processed
+    sections = {"description": [], "args": [], "returns": []}
+    current_section = "description"
+    section_titles = {"Args:": "args", "Arguments:": "args", "Returns:": "returns"}
+
+    for line in lines:
+        stripped_line = line.strip()
+        matched_section = False
+        for title, section in section_titles.items():
+            if stripped_line.startswith(title):
+                current_section = section
+                content = stripped_line[len(title) :].strip()
+                if content:
+                    sections[current_section].append(content)
+                matched_section = True
+                break
+        if matched_section:
+            continue
+        sections[current_section].append(line)
+    return sections
+
+
+def _parse_description(lines: list[str]) -> str:
+    description_lines = [line.strip() for line in lines if line.strip()]
+    description = " ".join(description_lines).strip()
+    if not description:
+        raise ValueError(
+            "Function description is missing in the docstring. Please provide a function description."
+        )
+    return description
+
+
+def _parse_params(lines: list[str]) -> dict[str, Optional[str]]:
+    parsed_params = {}
+    if not lines:
+        return parsed_params
 
     param_indent = None
-    return_indent = None
+    current_param = None
+    param_description_lines = []
 
     for line in lines:
         if not line.strip():
-            if state == State.ARGS and current_param and param_description_lines:
-                description = " ".join(param_description_lines).strip()
-                if description:
-                    parsed_params[current_param] = description
-                current_param = None
-                param_description_lines = []
-            elif state == State.RETURNS and return_description_lines:
-                returns = " ".join(return_description_lines).strip()
             continue
 
         stripped_line = line.lstrip()
         indent = len(line) - len(stripped_line)
 
-        if state == State.DESCRIPTION:
-            if stripped_line in ("Args:", "Arguments:"):
-                state = State.ARGS
-                param_indent = None
-                continue
-            elif stripped_line == "Returns:":
-                state = State.RETURNS
-                return_indent = None
-                continue
+        if param_indent is None:
+            param_indent = indent
+
+        if indent < param_indent:
+            current_param, param_description_lines = _finalize_current_param(
+                parsed_params, current_param, param_description_lines
+            )
+            continue
+
+        if ":" in stripped_line:
+            param_part, desc_part = stripped_line.split(":", 1)
+            param_name = _extract_param_name(param_part.strip())
+
+            if indent == param_indent:
+                current_param, param_description_lines = _finalize_current_param(
+                    parsed_params, current_param, param_description_lines
+                )
+                current_param = param_name
+                param_description_lines = [desc_part.strip()] if desc_part.strip() else []
             else:
-                description_lines.append(stripped_line)
-        elif state == State.ARGS:
-            if stripped_line in ("Returns:",):
-                state = State.RETURNS
-                if current_param and param_description_lines:
-                    description = " ".join(param_description_lines).strip()
-                    if description:
-                        parsed_params[current_param] = description
-                    current_param = None
-                    param_description_lines = []
-                continue
-
-            if param_indent is None:
-                # Set the base indentation for parameters
-                param_indent = indent
-
-            if indent < param_indent:
-                # End of Args section
-                state = State.END
-                if current_param and param_description_lines:
-                    description = " ".join(param_description_lines).strip()
-                    if description:
-                        parsed_params[current_param] = description
-                    current_param = None
-                    param_description_lines = []
-                # Reprocess this line in the new state
-                if stripped_line in ("Args:", "Arguments:"):
-                    state = State.ARGS
-                    param_indent = None
-                elif stripped_line == "Returns:":
-                    state = State.RETURNS
-                    return_indent = None
-                else:
-                    state = State.END
-                continue
-
-            # Check if the section line is a new parameter
-            if ":" in stripped_line:
-                # Split only at the first colon
-                param_part, desc_part = stripped_line.split(":", 1)
-                param_part = param_part.strip()
-                desc_part = desc_part.strip()
-
-                # Handle Google-style type hints in parameters, e.g., "param (int)"
-                if "(" in param_part and param_part.endswith(")"):
-                    param_name = param_part.split("(", 1)[0].strip()
-                else:
-                    param_name = param_part
-
-                # If indent is equal to base indent, it's a new parameter
-                if indent == param_indent:
-                    if current_param and param_description_lines:
-                        description = " ".join(param_description_lines).strip()
-                        if description:
-                            parsed_params[current_param] = description
-
-                    current_param = param_name
-                    param_description_lines = [desc_part] if desc_part else []
-                else:
-                    # Handle continuations
-                    if current_param:
-                        param_description_lines.append(stripped_line)
-            else:
-                # Handle continuation lines for the parameter description
                 if current_param:
                     param_description_lines.append(stripped_line)
-        elif state == State.RETURNS:
-            if return_indent is None:
-                return_indent = indent
+        else:
+            if current_param:
+                param_description_lines.append(stripped_line)
 
-            if indent < return_indent:
-                state = State.END
-                if return_description_lines:
-                    returns = " ".join(return_description_lines).strip()
-                if stripped_line in ("Args:", "Arguments:"):
-                    state = State.ARGS
-                    param_indent = None
-                elif stripped_line == "Returns:":
-                    state = State.RETURNS
-                    return_indent = None
-                else:
-                    state = State.END
-                continue
+    _finalize_current_param(parsed_params, current_param, param_description_lines)
+    return parsed_params
 
-            return_description_lines.append(stripped_line)
 
-    if state == State.ARGS and current_param and param_description_lines:
+def _parse_returns(lines: list[str]) -> Optional[str]:
+    if not lines:
+        return None
+    return_description = " ".join(line.strip() for line in lines if line.strip()).strip()
+    if return_description == PLACEHOLDER:
+        return PLACEHOLDER
+    return return_description if return_description else None
+
+
+def _finalize_current_param(
+    parsed_params: dict, current_param: Optional[str], param_description_lines: list[str]
+) -> tuple[Optional[str], list[str]]:
+    if current_param is not None:
         description = " ".join(param_description_lines).strip()
-        if description:
-            parsed_params[current_param] = description
-    if state == State.RETURNS and return_description_lines:
-        returns = " ".join(return_description_lines).strip()
+        parsed_params[current_param] = description if description else None
+    return None, []
 
-    description = " ".join(description_lines).strip()
 
-    if not description:
-        raise ValueError(
-            "Function description is missing in the docstring. Please provide a function description."
-        )
-
-    return DocstringInfo(description=description, params=parsed_params, returns=returns)
+def _extract_param_name(param_part: str) -> str:
+    if "(" in param_part and param_part.endswith(")"):
+        return param_part.split("(", 1)[0].strip()
+    return param_part

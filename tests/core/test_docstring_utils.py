@@ -4,17 +4,11 @@ from ucai.core.utils.docstring_utils import DocstringInfo, parse_docstring
 
 
 def test_parse_docstring_empty():
-    """
-    Test that an empty docstring raises a ValueError.
-    """
     with pytest.raises(ValueError, match="Docstring is empty"):
         parse_docstring("")
 
 
 def test_parse_docstring_missing_description():
-    """
-    Test that a docstring without a description raises a ValueError.
-    """
     docstring = """
     Args:
         x: The input value.
@@ -26,9 +20,6 @@ def test_parse_docstring_missing_description():
 
 
 def test_parse_docstring_single_line_single_param():
-    """
-    Test parsing a simple docstring with a single-line description and one parameter.
-    """
     docstring = """
     Add one to the input.
 
@@ -47,9 +38,6 @@ def test_parse_docstring_single_line_single_param():
 
 
 def test_parse_docstring_multiple_params():
-    """
-    Test parsing a docstring with multiple parameters.
-    """
     docstring = """
     Calculate the area of a rectangle.
 
@@ -69,9 +57,6 @@ def test_parse_docstring_multiple_params():
 
 
 def test_parse_docstring_multi_line_param_description_with_colon():
-    """
-    Test parsing a docstring where a parameter description spans multiple lines and includes a colon.
-    """
     docstring = """
     Add one to the input.
 
@@ -91,9 +76,6 @@ def test_parse_docstring_multi_line_param_description_with_colon():
 
 
 def test_parse_docstring_no_params():
-    """
-    Test parsing a docstring with no parameters.
-    """
     docstring = """
     Get the current timestamp.
 
@@ -110,9 +92,6 @@ def test_parse_docstring_no_params():
 
 
 def test_parse_docstring_google_style():
-    """
-    Test parsing a Google-style docstring.
-    """
     docstring = """
     Calculate the sum of two numbers.
 
@@ -133,9 +112,6 @@ def test_parse_docstring_google_style():
 
 
 def test_parse_docstring_malformed_missing_sections():
-    """
-    Test parsing a malformed docstring missing Args and Returns sections.
-    """
     docstring = """
     Just a simple description without parameters or return information.
     """
@@ -149,9 +125,6 @@ def test_parse_docstring_malformed_missing_sections():
 
 
 def test_parse_docstring_parameters_without_descriptions():
-    """
-    Test parsing a docstring where parameters are listed without descriptions.
-    """
     docstring = """
     Process data.
 
@@ -162,16 +135,15 @@ def test_parse_docstring_parameters_without_descriptions():
         bool: Success status.
     """
     expected = DocstringInfo(
-        description="Process data.", params={}, returns="bool: Success status."
+        description="Process data.",
+        params={"data": None, "config": None},
+        returns="bool: Success status.",
     )
     result = parse_docstring(docstring)
     assert result == expected
 
 
 def test_parse_docstring_returns_without_description():
-    """
-    Test parsing a docstring where the Returns section is present without a description.
-    """
     docstring = """
     Check if the user is active.
 
@@ -191,9 +163,6 @@ def test_parse_docstring_returns_without_description():
 
 
 def test_parse_docstring_extra_colons_in_description():
-    """
-    Test parsing a docstring with extra colons in the parameter description.
-    """
     docstring = """
     Add one to the input.
 
@@ -213,9 +182,6 @@ def test_parse_docstring_extra_colons_in_description():
 
 
 def test_parse_docstring_multiple_colons_in_description():
-    """
-    Test parsing a docstring with multiple colons in a single parameter description.
-    """
     docstring = """
     Configure the server.
 
@@ -232,6 +198,106 @@ def test_parse_docstring_multiple_colons_in_description():
             "config": "Server configuration. Details: Should include IP, port, and protocol. Example: ip=127.0.0.1, port=8080, protocol=http"
         },
         returns="None:",
+    )
+    result = parse_docstring(docstring)
+    assert result == expected
+
+
+def test_parse_docstring_improper_newline_formatting():
+    docstring = """
+    Concat some values.
+
+    Args:
+
+        x: The input value.
+
+        y: Another input value.
+
+
+
+        z: Another input value.
+
+    Returns:
+        str: The input values concatenated.
+    
+    """
+    expected = DocstringInfo(
+        description="Concat some values.",
+        params={
+            "x": "The input value.",
+            "y": "Another input value.",
+            "z": "Another input value.",
+        },
+        returns="str: The input values concatenated.",
+    )
+    result = parse_docstring(docstring)
+    assert result == expected
+
+
+def test_parse_docstring_generic_placeholder():
+    docstring = """
+    Concat some values.
+    Args:
+        x: The input value.
+        y: Another input value.
+        z: ...
+    Returns: ...
+    """
+    expected = DocstringInfo(
+        description="Concat some values.",
+        params={
+            "x": "The input value.",
+            "y": "Another input value.",
+            "z": "...",
+        },
+        returns="...",
+    )
+    result = parse_docstring(docstring)
+    assert result == expected
+
+
+def test_parse_docstring_multiline_description():
+    docstring = """
+
+
+    Concat some values.
+
+    
+    This function concatenates the input values.
+
+
+    And does some other things.
+    Args:
+        x: The input value.
+        y: Another input value.
+    Returns:
+        str: The input values concatenated.
+    """
+    expected = DocstringInfo(
+        description="Concat some values. This function concatenates the input values. And does some other things.",
+        params={
+            "x": "The input value.",
+            "y": "Another input value.",
+        },
+        returns="str: The input values concatenated.",
+    )
+    result = parse_docstring(docstring)
+    assert result == expected
+
+
+def test_parse_docstring_single_line_invalid_structured_comments():
+    docstring = """
+    Concat some values.
+    
+    Args: x: The input value.
+    Returns: str: The input values concatenated.
+    """
+    expected = DocstringInfo(
+        description="Concat some values.",
+        params={
+            "x": "The input value.",
+        },
+        returns="str: The input values concatenated.",
     )
     result = parse_docstring(docstring)
     assert result == expected
