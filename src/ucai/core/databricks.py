@@ -93,7 +93,7 @@ def _is_in_databricks_notebook_environment() -> bool:
     try:
         from dbruntime.databricks_repl_context import get_context
 
-        return get_context().isInNotebook()
+        return get_context().isInNotebook
     except (ImportError, AttributeError):
         return False
 
