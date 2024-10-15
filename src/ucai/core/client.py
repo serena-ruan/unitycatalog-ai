@@ -166,14 +166,14 @@ class BaseFunctionClient(ABC):
     @abstractmethod
     def delete_function(
         self,
-        full_function_name: str,
+        function_name: str,
         **kwargs,
     ) -> None:
         """
         Delete a function by its full name.
 
         Args:
-            full_function_name: The full name of the function to delete.
+            function_name: The full name of the function to delete.
                 It should be in the format of "catalog.schema.function_name".
         """
 
