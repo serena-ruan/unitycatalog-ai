@@ -4,7 +4,9 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pytest
 
-from ucai.core.utils.callable_utils import generate_sql_function_body
+from ucai.core.utils.callable_utils import (
+    generate_sql_function_body,
+)
 
 # ---------------------------
 # Tests for Simple Functions and Docstrings
