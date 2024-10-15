@@ -52,6 +52,7 @@ DATABRICKS_CONNECT_VERSION_NOT_SUPPORTED_ERROR_MESSAGE = (
 )
 SESSION_RETRY_BASE_DELAY = 1
 SESSION_RETRY_MAX_DELAY = 32
+SESSION_EXCEPTION_MESSAGE = "session_id is no longer usable"
 
 _logger = logging.getLogger(__name__)
 
@@ -88,6 +89,15 @@ def _try_get_spark_session_in_dbr() -> Any:
         return
 
 
+def _is_in_databricks_notebook_environment() -> bool:
+    try:
+        from dbruntime.databricks_repl_context import get_context
+
+        return get_context().isInNotebook()
+    except (ImportError, AttributeError):
+        return False
+
+
 def extract_function_name(sql_body: str) -> str:
     """
     Extract function name from the sql body.
@@ -115,53 +125,44 @@ def extract_function_name(sql_body: str) -> str:
     )
 
 
-def retry_on_session_expiration():
+def retry_on_session_expiration(func):
     """
     Decorator to retry a method upon session expiration errors with exponential backoff.
-
-    Args:
-        max_attempts (int): Maximum number of retry attempts.
-        base_delay (int): Base delay in seconds for exponential backoff.
-        max_delay (int): Maximum delay in seconds between retries.
     """
     max_attempts = int(UCAI_DATABRICKS_SESSION_RETRY_MAX_ATTEMPTS.get())
 
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(self, *args, **kwargs):
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    return func(self, *args, **kwargs)
-                except Exception as e:
-                    error_message = str(e)
-                    if (
-                        "session_id is no longer usable" in error_message
-                        or "BAD_REQUEST: session_id is no longer usable" in error_message
-                    ):
-                        if attempt < max_attempts:
-                            delay = min(
-                                SESSION_RETRY_BASE_DELAY * (2 ** (attempt - 1)),
-                                SESSION_RETRY_MAX_DELAY,
-                            )
-                            _logger.warning(
-                                f"Session expired. Attempt {attempt} of {max_attempts}. Refreshing session and retrying after {delay} seconds..."
-                            )
-                            self.refresh_client_and_session()
-                            time.sleep(delay)
-                            continue
-                        else:
-                            _logger.error(
-                                f"Failed to execute {func.__name__} after {max_attempts} attempts."
-                            )
-                            raise RuntimeError(
-                                f"Failed to execute {func.__name__} after {max_attempts} attempts due to session expiration."
-                            ) from e
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return func(self, *args, **kwargs)
+            except Exception as e:
+                error_message = str(e)
+                if SESSION_EXCEPTION_MESSAGE in error_message:
+                    if not self._is_default_client:
+                        refresh_message = f"Failed to execute {func.__name__} due to session expiration. Unable to automatically refresh session when using a custom client."
+                        _logger.error(refresh_message)
+                        raise RuntimeError(refresh_message) from e
+
+                    if attempt < max_attempts:
+                        delay = min(
+                            SESSION_RETRY_BASE_DELAY * (2 ** (attempt - 1)),
+                            SESSION_RETRY_MAX_DELAY,
+                        )
+                        _logger.warning(
+                            f"Session expired. Attempt {attempt} of {max_attempts}. Refreshing session and retrying after {delay} seconds..."
+                        )
+                        self.refresh_client_and_session()
+                        time.sleep(delay)
+                        continue
                     else:
-                        raise
+                        refresh_failure_message = f"Failed to execute {func.__name__} after {max_attempts} attempts due to session expiration."
+                        _logger.error(refresh_failure_message)
+                        raise RuntimeError(refresh_failure_message) from e
+                else:
+                    raise
 
-        return wrapper
-
-    return decorator
+    return wrapper
 
 
 class DatabricksFunctionClient(BaseFunctionClient):
@@ -191,8 +192,8 @@ class DatabricksFunctionClient(BaseFunctionClient):
         self.warehouse_id = warehouse_id
         self._validate_warehouse_type()
         self.profile = profile
-        # TODO: add CI to run this in Databricks notebook
         self.spark = _try_get_spark_session_in_dbr()
+        self._is_default_client = client is None
         super().__init__()
 
     def set_default_spark_session(self):
@@ -222,13 +223,19 @@ class DatabricksFunctionClient(BaseFunctionClient):
             )
 
     def refresh_client_and_session(self):
+        """
+        Refreshes the databricks client and spark session if the session_id has been invalidated due to expiration of temporary credentials.
+        If the client is running within an interactive Databricks notebook environment, the spark session is not terminated.
+        """
+
         _logger.info("Refreshing Databricks client and Spark session due to session expiration.")
         self.client = get_default_databricks_workspace_client(profile=self.profile)
-        self.stop_spark_session()
-        self.set_default_spark_session()
+        if not _is_in_databricks_notebook_environment:
+            self.stop_spark_session()
+            self.set_default_spark_session()
         self.spark = _try_get_spark_session_in_dbr()
 
-    @retry_on_session_expiration()
+    @retry_on_session_expiration
     @override
     def create_function(
         self,
@@ -258,7 +265,7 @@ class DatabricksFunctionClient(BaseFunctionClient):
         # return self.client.functions.create(function_info)
         raise ValueError("sql_function_body must be provided.")
 
-    @retry_on_session_expiration()
+    @retry_on_session_expiration
     @override
     def create_python_function(
         self, *, func: Callable[..., Any], catalog: str, schema: str, replace: bool = False
@@ -540,7 +547,7 @@ class DatabricksFunctionClient(BaseFunctionClient):
         else:
             return self._execute_uc_functions_with_serverless(function_info, parameters)
 
-    @retry_on_session_expiration()
+    @retry_on_session_expiration
     def _execute_uc_functions_with_warehouse(
         self, function_info: "FunctionInfo", parameters: Dict[str, Any]
     ) -> FunctionExecutionResult:
@@ -633,35 +640,25 @@ class DatabricksFunctionClient(BaseFunctionClient):
                 format="CSV", value=csv_buffer.getvalue(), truncated=truncated
             )
 
-    @retry_on_session_expiration()
+    @retry_on_session_expiration
     def _execute_uc_functions_with_serverless(
         self, function_info: "FunctionInfo", parameters: Dict[str, Any]
     ) -> FunctionExecutionResult:
         _logger.info("Using databricks connect to execute functions with serverless compute.")
         self.set_default_spark_session()
         sql_command = get_execute_function_sql_command(function_info, parameters)
-        try:
-            result = self.spark.sql(sqlQuery=sql_command)
-            if is_scalar(function_info):
-                return FunctionExecutionResult(format="SCALAR", value=str(result.collect()[0][0]))
-            else:
-                row_limit = int(UCAI_DATABRICKS_SERVERLESS_EXECUTION_RESULT_ROW_LIMIT.get())
-                truncated = result.count() > row_limit
-                pdf = result.limit(row_limit).toPandas()
-                csv_buffer = StringIO()
-                pdf.to_csv(csv_buffer, index=False)
-                return FunctionExecutionResult(
-                    format="CSV", value=csv_buffer.getvalue(), truncated=truncated
-                )
-        except Exception as e:
-            if (
-                "session_id is no longer usable"
-                or "BAD_REQUEST: session_id is no longer usable" in str(e)
-            ):
-                raise
-            raise RuntimeError(
-                f"Failed to execute function with function name: {function_info.full_name}"
-            ) from e
+        result = self.spark.sql(sqlQuery=sql_command)
+        if is_scalar(function_info):
+            return FunctionExecutionResult(format="SCALAR", value=str(result.collect()[0][0]))
+        else:
+            row_limit = int(UCAI_DATABRICKS_SERVERLESS_EXECUTION_RESULT_ROW_LIMIT.get())
+            truncated = result.count() > row_limit
+            pdf = result.limit(row_limit).toPandas()
+            csv_buffer = StringIO()
+            pdf.to_csv(csv_buffer, index=False)
+            return FunctionExecutionResult(
+                format="CSV", value=csv_buffer.getvalue(), truncated=truncated
+            )
 
     @override
     def to_dict(self):
