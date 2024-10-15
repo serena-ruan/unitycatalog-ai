@@ -614,7 +614,7 @@ class DatabricksFunctionClient(BaseFunctionClient):
         Args:
             function_name: The full name of the function to delete.
                 It should be in the format of "catalog.schema.function_name".
-            force: Force deletion even if the function is notempty. Defaults to None.
+            force: Force deletion even if the function is not empty. Defaults to None.
         """
         self.client.functions.delete(function_name, force=force)
 
