@@ -175,6 +175,7 @@ class BaseFunctionClient(ABC):
         Args:
             function_name: The full name of the function to delete.
                 It should be in the format of "catalog.schema.function_name".
+            kwargs: additional key-value pairs to include when deleting the function.
         """
 
     @abstractmethod
