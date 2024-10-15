@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any, Callable, Dict, List, NamedTuple, Union
 
 import pytest
+from databricks.sdk.errors import ResourceDoesNotExist
 from databricks.sdk.service.catalog import (
     ColumnTypeName,
     CreateFunctionParameterStyle,
@@ -531,6 +532,19 @@ def test_list_functions(client: DatabricksFunctionClient):
             )
             assert len(function_infos) == 1
             assert function_infos[0] != function_info
+
+
+@requires_databricks
+def test_delete_function(serverless_client: DatabricksFunctionClient):
+    function_name = random_func_name(schema=SCHEMA)
+    with pytest.raises(ResourceDoesNotExist, match=rf"'{function_name}' does not exist"):
+        serverless_client.delete_function(function_name)
+
+    serverless_client.create_function(sql_function_body=simple_function(function_name))
+    serverless_client.get_function(function_name)
+    serverless_client.delete_function(function_name)
+    with pytest.raises(ResourceDoesNotExist, match=rf"'{function_name}' does not exist"):
+        serverless_client.get_function(function_name)
 
 
 @pytest.mark.parametrize(
