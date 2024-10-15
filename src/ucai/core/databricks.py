@@ -603,6 +603,25 @@ class DatabricksFunctionClient(BaseFunctionClient):
             ) from e
 
     @override
+    def delete_function(
+        self,
+        function_name: str,
+        force: Optional[bool] = None,
+    ) -> None:
+        """
+        Delete a function by its full name.
+
+        Args:
+            function_name: The full name of the function to delete.
+                It should be in the format of "catalog.schema.function_name".
+            force: Force deletion even if the function is not empty. This
+                parameter is used by underlying databricks workspace client
+                when deleting a function. If it is None then the parameter
+                is not included in the request. Defaults to None.
+        """
+        self.client.functions.delete(function_name, force=force)
+
+    @override
     def to_dict(self):
         return {
             # TODO: workspaceClient related config
