@@ -94,7 +94,7 @@ def _is_in_databricks_notebook_environment() -> bool:
         from dbruntime.databricks_repl_context import get_context
 
         return get_context().isInNotebook
-    except (ImportError, AttributeError):
+    except Exception:
         return False
 
 
@@ -141,7 +141,6 @@ def retry_on_session_expiration(func):
                 if SESSION_EXCEPTION_MESSAGE in error_message:
                     if not self._is_default_client:
                         refresh_message = f"Failed to execute {func.__name__} due to session expiration. Unable to automatically refresh session when using a custom client."
-                        _logger.error(refresh_message)
                         raise RuntimeError(refresh_message) from e
 
                     if attempt < max_attempts:
@@ -157,7 +156,6 @@ def retry_on_session_expiration(func):
                         continue
                     else:
                         refresh_failure_message = f"Failed to execute {func.__name__} after {max_attempts} attempts due to session expiration."
-                        _logger.error(refresh_failure_message)
                         raise RuntimeError(refresh_failure_message) from e
                 else:
                     raise
