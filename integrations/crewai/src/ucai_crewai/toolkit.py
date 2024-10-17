@@ -164,8 +164,9 @@ class UCFunctionToolkit(BaseModel):
         generated_model = generate_function_input_params_schema(function_info).pydantic_model
 
         if generated_model == BaseModel:
-            #NB: Pydantic BaseModel.schema(), which is used by CrewAI, requires a subclass 
-            # of BaseClass.
+            # NB: Pydantic BaseModel.schema(), which is used by CrewAI, requires a subclass 
+            # of BaseClass. When function_info.input_params is None, we return a BaseModel as the
+            # pydantic_model 
             class _BaseModelWrapper(generated_model):
                 ...
         
