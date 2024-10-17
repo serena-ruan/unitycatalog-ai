@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import pytest
 from typing_extensions import override
@@ -34,6 +34,12 @@ class MockClient(BaseFunctionClient):
         return function_info
 
     @override
+    def create_python_function(
+        self, func: Callable, func_comment: str, catalog: str, schema: str
+    ) -> Any:
+        return ""
+
+    @override
     def get_function(self, function_name: str, **kwargs: Any) -> Any:
         return {}
 
@@ -54,6 +60,10 @@ class MockClient(BaseFunctionClient):
         self, function_info: Any, parameters: Dict[str, Any], **kwargs: Any
     ) -> Any:
         pass
+
+    @override
+    def delete_function(self, function_name, **kwargs):
+        return
 
     @override
     def to_dict(self):

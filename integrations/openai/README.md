@@ -64,7 +64,7 @@ client.create_function(sql_function_body=sql_body)
 
 Now the function is created and stored in the corresponding catalog and schema.
 
-#### Create an UCFunctionToolkit
+#### Create a UCFunctionToolkit instance
 
 [OpenAI function calling](https://platform.openai.com/docs/guides/function-calling) allows you to connect models like `gpt-4o-mini` to external tools and systems, and UCFunctionToolkit provides the ability to use UC functions as tools in OpenAI calls.
 

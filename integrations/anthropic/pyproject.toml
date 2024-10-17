@@ -1,17 +1,17 @@
 [project]
-name = "ucai-langchain"
+name = "ucai-anthropic"
 version = "0.0.1"
-description = "Support for Unity Catalog functions as LangChain tools"
+description = "Support for Unity Catalog functions as Anthropic tools"
 authors = [
-    { name="Serena Ruan", email="serena.ruan@databricks.com" }
+    { name="Ben Wilson", email="benjamin.wilson@databricks.com" }
 ]
 readme = "README.md"
 license = { text="Apache-2.0" }
 requires-python = ">=3.9"
 dependencies = [
-    "langchain>=0.2.0",
-    "langchain-community>=0.2.0",
+    "anthropic>=0.34.2",
     "ucai-core",
+    "pydantic<3,>=2",
 ]
 
 [project.optional-dependencies]
@@ -21,9 +21,7 @@ dev = [
   # temp needed before ucai-core[databricks] is released
   "databricks-sdk>=0.32.0",
   "databricks-connect",
-  "ruff==0.6.4",
-  "langgraph",
-  "langchain_databricks",
+  "ruff==0.6.4"
 ]
 
 [build-system]
@@ -32,11 +30,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build]
 include = [
-  "src/ucai_langchain/*"
+  "src/ucai_anthropic/*"
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ucai_langchain"]
+packages = ["src/ucai_anthropic"]
 
 [tool.ruff]
 line-length = 100

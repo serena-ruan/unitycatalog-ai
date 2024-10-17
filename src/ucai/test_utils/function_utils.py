@@ -1,7 +1,7 @@
 import logging
 import uuid
 from contextlib import contextmanager
-from typing import Generator, NamedTuple, Optional
+from typing import Any, Callable, Generator, NamedTuple, Optional
 
 from ucai.core.databricks import DatabricksFunctionClient
 from ucai.core.utils.function_processing_utils import get_tool_name
@@ -31,7 +31,7 @@ def generate_func_name_and_cleanup(client: DatabricksFunctionClient, schema: str
         yield func_name
     finally:
         try:
-            client.client.functions.delete(func_name)
+            client.delete_function(func_name)
         except Exception as e:
             _logger.warning(f"Fail to delete function: {e}")
 
@@ -75,6 +75,28 @@ $$
         )
     finally:
         try:
-            client.client.functions.delete(func_name)
+            client.delete_function(func_name)
+        except Exception as e:
+            _logger.warning(f"Fail to delete function: {e}")
+
+
+@contextmanager
+def create_python_function_and_cleanup(
+    client: DatabricksFunctionClient,
+    *,
+    schema: str,
+    func: Callable[..., Any] = None,
+) -> Generator[FunctionObj, None, None]:
+    func_name = f"{CATALOG}.{schema}.{func.__name__}"
+    try:
+        func_info = client.create_python_function(func=func, catalog=CATALOG, schema=schema)
+        yield FunctionObj(
+            full_function_name=func_name,
+            comment=func_info.comment,
+            tool_name=get_tool_name(func_name),
+        )
+    finally:
+        try:
+            client.delete_function(func_name)
         except Exception as e:
             _logger.warning(f"Fail to delete function: {e}")

@@ -1,12 +1,14 @@
 import base64
 import datetime
 import os
+import re
 import time
 from decimal import Decimal
-from typing import Any, Callable, Dict, List, NamedTuple
-from unittest import mock
+from typing import Any, Callable, Dict, List, NamedTuple, Union
+from unittest.mock import MagicMock, patch
 
 import pytest
+from databricks.sdk.errors import ResourceDoesNotExist
 from databricks.sdk.service.catalog import (
     ColumnTypeName,
     CreateFunctionParameterStyle,
@@ -20,12 +22,15 @@ from databricks.sdk.service.catalog import (
 )
 
 from ucai.core.databricks import (
-    DEFAULT_EXECUTE_FUNCTION_ARGS,
-    EXECUTE_FUNCTION_ARG_NAME,
-    UC_AI_CLIENT_EXECUTION_RESULT_ROW_LIMIT,
-    UNITYCATALOG_AI_CLIENT_EXECUTION_TIMEOUT,
     DatabricksFunctionClient,
     extract_function_name,
+    retry_on_session_expiration,
+)
+from ucai.core.envs.databricks_env_vars import (
+    UCAI_DATABRICKS_SERVERLESS_EXECUTION_RESULT_ROW_LIMIT,
+    UCAI_DATABRICKS_SESSION_RETRY_MAX_ATTEMPTS,
+    UCAI_DATABRICKS_WAREHOUSE_EXECUTE_FUNCTION_WAIT_TIMEOUT,
+    UCAI_DATABRICKS_WAREHOUSE_RETRY_TIMEOUT,
 )
 from ucai.test_utils.client_utils import (
     client,  # noqa: F401
@@ -34,6 +39,7 @@ from ucai.test_utils.client_utils import (
 )
 from ucai.test_utils.function_utils import (
     CATALOG,
+    create_python_function_and_cleanup,
     generate_func_name_and_cleanup,
     random_func_name,
 )
@@ -43,6 +49,12 @@ SCHEMA = os.environ.get("SCHEMA", "ucai_core_test")
 
 class FunctionInputOutput(NamedTuple):
     sql_body: str
+    inputs: List[Dict[str, Any]]
+    output: str
+
+
+class PythonFunctionInputOutput(NamedTuple):
+    func: Callable
     inputs: List[Dict[str, Any]]
     output: str
 
@@ -221,6 +233,131 @@ RETURN SELECT extract(DAYOFWEEK_ISO FROM day), day
     )
 
 
+def python_function_with_dict_input() -> PythonFunctionInputOutput:
+    def function_with_dict_input(s: Dict[str, int]) -> int:
+        """Python function that sums the values in a dictionary."""
+        return sum(s.values())
+
+    return PythonFunctionInputOutput(
+        func=function_with_dict_input,
+        inputs=[{"s": {"a": 1, "b": 3, "c": 4}}],
+        output="8",
+    )
+
+
+def python_function_with_array_input() -> PythonFunctionInputOutput:
+    def function_with_array_input(s: List[int]) -> str:
+        """Python function with array input"""
+        return ",".join(str(i) for i in s)
+
+    return PythonFunctionInputOutput(
+        func=function_with_array_input,
+        inputs=[{"s": [1, 2, 3]}],
+        output="1,2,3",
+    )
+
+
+def python_function_with_string_input() -> PythonFunctionInputOutput:
+    def function_with_string_input(s: str) -> str:
+        """Python function with string input"""
+        return s
+
+    return PythonFunctionInputOutput(
+        func=function_with_string_input,
+        inputs=[{"s": "abc"}],
+        output="abc",
+    )
+
+
+def python_function_with_binary_input() -> PythonFunctionInputOutput:
+    def function_with_binary_input(s: bytes) -> str:
+        """Python function with binary input"""
+        return s.decode("utf-8")
+
+    return PythonFunctionInputOutput(
+        func=function_with_binary_input,
+        inputs=[
+            {"s": base64.b64encode(b"Hello").decode("utf-8")},
+            {"s": "SGVsbG8="},
+        ],
+        output="Hello",
+    )
+
+
+def python_function_with_interval_input() -> PythonFunctionInputOutput:
+    def function_with_interval_input(s: datetime.timedelta) -> str:
+        """Python function with interval input"""
+        import datetime
+
+        return (datetime.datetime(2024, 8, 19) - s).isoformat()
+
+    return PythonFunctionInputOutput(
+        func=function_with_interval_input,
+        inputs=[
+            {"s": datetime.timedelta(days=0, hours=0, minutes=16, seconds=40, microseconds=123456)},
+            {"s": datetime.timedelta(days=0, seconds=1000, microseconds=123456)},
+        ],
+        output="2024-08-18T23:43:19.876544",
+    )
+
+
+def python_function_with_timestamp_input() -> PythonFunctionInputOutput:
+    def function_with_timestamp_input(x: datetime.datetime, y: datetime.datetime) -> str:
+        """Python function with timestamp input"""
+        return str(x.isoformat()) + "; " + str(y.isoformat())
+
+    return PythonFunctionInputOutput(
+        func=function_with_timestamp_input,
+        inputs=[
+            {
+                "x": datetime.datetime(2024, 8, 19, 11, 2, 3),
+                "y": datetime.datetime(2024, 8, 19, 11, 2, 3),
+            },
+            {"x": "2024-08-19T11:02:03", "y": "2024-08-19T11:02:03"},
+        ],
+        output="2024-08-19T11:02:03+00:00; 2024-08-19T11:02:03+00:00",
+    )
+
+
+def python_function_with_date_input() -> PythonFunctionInputOutput:
+    def function_with_date_input(s: datetime.date) -> str:
+        """Python function with date input"""
+        return s.isoformat()
+
+    return PythonFunctionInputOutput(
+        func=function_with_date_input,
+        inputs=[{"s": datetime.date(2024, 8, 19)}, {"s": "2024-08-19"}],
+        output="2024-08-19",
+    )
+
+
+def python_function_with_map_input() -> PythonFunctionInputOutput:
+    def function_with_map_input(s: Dict[str, List[int]]) -> str:
+        """Python function with map input"""
+        result = []
+        for key, value in s.items():
+            result.append(str(key) + " => " + str(value))
+        return ",".join(result)
+
+    return PythonFunctionInputOutput(
+        func=function_with_map_input,
+        inputs=[{"s": {"a": [1, 2, 3], "b": [4, 5, 6]}}],
+        output="a => [1, 2, 3],b => [4, 5, 6]",
+    )
+
+
+def python_function_with_decimal_input() -> PythonFunctionInputOutput:
+    def function_with_decimal_input(s: Decimal) -> str:
+        """Python function with decimal input."""
+        return format(s, ".20g")
+
+    return PythonFunctionInputOutput(
+        func=function_with_decimal_input,
+        inputs=[{"s": Decimal("123.45123456789457000")}],
+        output="123.45123456789457000",
+    )
+
+
 @requires_databricks
 @pytest.mark.parametrize(
     "create_function",
@@ -277,11 +414,38 @@ def test_create_and_execute_function_using_serverless(
 
 
 @requires_databricks
+@pytest.mark.parametrize(
+    "create_function",
+    [
+        python_function_with_dict_input,
+        python_function_with_array_input,
+        python_function_with_string_input,
+        python_function_with_binary_input,
+        python_function_with_interval_input,
+        python_function_with_timestamp_input,
+        python_function_with_date_input,
+        python_function_with_map_input,
+        python_function_with_decimal_input,
+    ],
+)
+def test_create_and_execute_python_function(
+    client: DatabricksFunctionClient, create_function: Callable[[], PythonFunctionInputOutput]
+):
+    function_sample = create_function()
+    with create_python_function_and_cleanup(
+        client, func=function_sample.func, schema=SCHEMA
+    ) as func_obj:
+        for input_example in function_sample.inputs:
+            result = client.execute_function(func_obj.full_function_name, input_example)
+            assert result.value == function_sample.output
+
+
+@requires_databricks
 def test_execute_function_using_serverless_row_limit(
     serverless_client: DatabricksFunctionClient,
     monkeypatch,
 ):
-    monkeypatch.setenv(UC_AI_CLIENT_EXECUTION_RESULT_ROW_LIMIT, "1")
+    monkeypatch.setenv(UCAI_DATABRICKS_SERVERLESS_EXECUTION_RESULT_ROW_LIMIT.name, "1")
     with generate_func_name_and_cleanup(serverless_client, schema=SCHEMA) as func_name:
         function_sample = function_with_table_output(func_name)
         serverless_client.create_function(sql_function_body=function_sample.sql_body)
@@ -292,7 +456,7 @@ def test_execute_function_using_serverless_row_limit(
 
 @requires_databricks
 def test_execute_function_with_timeout(client: DatabricksFunctionClient, monkeypatch):
-    monkeypatch.setenv(UNITYCATALOG_AI_CLIENT_EXECUTION_TIMEOUT, "5")
+    monkeypatch.setenv(UCAI_DATABRICKS_WAREHOUSE_RETRY_TIMEOUT.name, "5")
     with generate_func_name_and_cleanup(client, schema=SCHEMA) as func_name:
         sql_body = f"""CREATE FUNCTION {func_name}()
 RETURNS STRING
@@ -308,7 +472,7 @@ $$
         result = client.execute_function(func_name)
         assert result.error.startswith("Statement execution is still running after 5 seconds")
 
-        monkeypatch.setenv(UNITYCATALOG_AI_CLIENT_EXECUTION_TIMEOUT, "100")
+        monkeypatch.setenv(UCAI_DATABRICKS_WAREHOUSE_RETRY_TIMEOUT.name, "100")
         result = client.execute_function(func_name)
         assert result.value == "10"
 
@@ -373,34 +537,56 @@ def test_list_functions(client: DatabricksFunctionClient):
             assert function_infos[0] != function_info
 
 
+@requires_databricks
+def test_delete_function(serverless_client: DatabricksFunctionClient):
+    function_name = random_func_name(schema=SCHEMA)
+    with pytest.raises(ResourceDoesNotExist, match=rf"'{function_name}' does not exist"):
+        serverless_client.delete_function(function_name)
+
+    serverless_client.create_function(sql_function_body=simple_function(function_name))
+    serverless_client.get_function(function_name)
+    serverless_client.delete_function(function_name)
+    with pytest.raises(ResourceDoesNotExist, match=rf"'{function_name}' does not exist"):
+        serverless_client.get_function(function_name)
+
+
 @pytest.mark.parametrize(
     ("sql_body", "function_name"),
     [
-        (
-            "CREATE OR REPLACE FUNCTION test(s STRING) RETURNS STRING LANGUAGE PYTHON AS $$ return s $$",
-            "test",
-        ),
         (
             "CREATE OR REPLACE FUNCTION a.b.test(s STRING) RETURNS STRING LANGUAGE PYTHON AS $$ return s $$",
             "a.b.test",
         ),
         (
-            "CREATE FUNCTION a.test(s STRING) RETURNS STRING LANGUAGE PYTHON AS $$ return s $$",
-            "a.test",
-        ),
-        (
             "CREATE TEMPORARY FUNCTION a.b.test(s STRING) RETURNS STRING LANGUAGE PYTHON AS $$ return s $$",
             "a.b.test",
         ),
-        (
-            "CREATE TEMPORARY FUNCTION IF NOT EXISTS test(s STRING) RETURNS STRING LANGUAGE PYTHON AS $$ return s $$",
-            "test",
-        ),
         ("CREATE FUNCTION IF NOT EXISTS a.b.test() RETURN 123", "a.b.test"),
+        (
+            "CREATE FUNCTION `some-catalog`.`some-schema`.`test_function`() RETURN 123",
+            "some-catalog.some-schema.test_function",
+        ),
+        (
+            "CREATE FUNCTION `奇怪的catalog`.`some-schema`.test_function() RETURN 123",
+            "奇怪的catalog.some-schema.test_function",
+        ),
     ],
 )
 def test_extract_function_name(sql_body, function_name):
     assert extract_function_name(sql_body) == function_name
+
+
+@pytest.mark.parametrize(
+    ("sql_body"),
+    [
+        "CREATE OR REPLACE FUNCTION test(s STRING) RETURNS STRING LANGUAGE PYTHON AS $$ return s $$",
+        "CREATE FUNCTION a.test(s STRING) RETURNS STRING LANGUAGE PYTHON AS $$ return s $$",
+        "CREATE TEMPORARY FUNCTION IF NOT EXISTS test(s STRING) RETURNS STRING LANGUAGE PYTHON AS $$ return s $$",
+    ],
+)
+def test_invalid_function_name(sql_body):
+    with pytest.raises(ValueError, match=r"Could not extract function name from the sql body"):
+        extract_function_name(sql_body)
 
 
 @pytest.mark.parametrize(
@@ -680,115 +866,9 @@ def good_function_info():
     )
 
 
-@pytest.fixture
-def bad_function_info():
-    func_name = random_func_name(schema=SCHEMA).split(".")[-1]
-    return FunctionInfo(
-        catalog_name=CATALOG,
-        schema_name=SCHEMA,
-        name=func_name,
-        input_params=FunctionParameterInfos(
-            parameters=[
-                FunctionParameterInfo(
-                    EXECUTE_FUNCTION_ARG_NAME,
-                    type_name=ColumnTypeName.STRING,
-                    type_text="string",
-                    position=0,
-                ),
-            ]
-        ),
-        data_type=ColumnTypeName.STRING,
-        external_language="Python",
-        comment="test function",
-        routine_body=CreateFunctionRoutineBody.EXTERNAL,
-        routine_definition=f"return {EXECUTE_FUNCTION_ARG_NAME}",
-        full_data_type="STRING",
-        return_params=FunctionParameterInfos(),
-        routine_dependencies=DependencyList(),
-        parameter_style=CreateFunctionParameterStyle.S,
-        is_deterministic=False,
-        sql_data_access=CreateFunctionSqlDataAccess.NO_SQL,
-        is_null_call=False,
-        security_type=CreateFunctionSecurityType.DEFINER,
-        specific_name=func_name,
-    )
-
-
-@pytest.mark.parametrize(
-    ("parameters", "execute_params"),
-    [
-        ({"a": 1, "b": "b"}, DEFAULT_EXECUTE_FUNCTION_ARGS),
-        (
-            {"a": 1, EXECUTE_FUNCTION_ARG_NAME: {"wait_timeout": "10s"}},
-            {**DEFAULT_EXECUTE_FUNCTION_ARGS, "wait_timeout": "10s"},
-        ),
-        (
-            {EXECUTE_FUNCTION_ARG_NAME: {"row_limit": "1000"}},
-            {**DEFAULT_EXECUTE_FUNCTION_ARGS, "row_limit": "1000"},
-        ),
-    ],
-)
-def test_extra_params_when_executing_function(
-    client: DatabricksFunctionClient, parameters, execute_params, good_function_info
-):
-    def mock_execute_statement(
-        statement,
-        warehouse_id,
-        *,
-        byte_limit=None,
-        catalog=None,
-        disposition=None,
-        format=None,
-        on_wait_timeout=None,
-        parameters=None,
-        row_limit=None,
-        schema=None,
-        wait_timeout=None,
-    ):
-        for key, value in execute_params.items():
-            assert locals()[key] == value
-        return mock.Mock()
-
-    client.client.statement_execution.execute_statement = mock_execute_statement
-    client._execute_uc_function(good_function_info, parameters)
-
-
-def test_extra_params_when_executing_function_errors(
-    client: DatabricksFunctionClient, good_function_info, bad_function_info
-):
-    def mock_execute_statement(
-        statement,
-        warehouse_id,
-        *,
-        byte_limit=None,
-        catalog=None,
-        disposition=None,
-        format=None,
-        on_wait_timeout=None,
-        parameters=None,
-        row_limit=None,
-        schema=None,
-        wait_timeout=None,
-    ):
-        return mock.Mock()
-
-    client.client.statement_execution.execute_statement = mock_execute_statement
-
-    with pytest.raises(
-        ValueError,
-        match=r"Parameter name conflicts with the reserved argument name for executing functions",
-    ):
-        client._execute_uc_function(bad_function_info, {EXECUTE_FUNCTION_ARG_NAME: "value"})
-
-    with pytest.raises(ValueError, match=r"Invalid parameters for executing functions"):
-        client._execute_uc_function(
-            good_function_info, {EXECUTE_FUNCTION_ARG_NAME: {"invalid_param": "a"}}
-        )
-
-
 @requires_databricks
 def test_extra_params_when_executing_function_e2e(client: DatabricksFunctionClient, monkeypatch):
-    monkeypatch.setenv(UNITYCATALOG_AI_CLIENT_EXECUTION_TIMEOUT, "5")
+    monkeypatch.setenv(UCAI_DATABRICKS_WAREHOUSE_RETRY_TIMEOUT.name, "5")
     with generate_func_name_and_cleanup(client, schema=SCHEMA) as func_name:
         sql_body = f"""CREATE FUNCTION {func_name}()
 RETURNS STRING
@@ -806,8 +886,456 @@ $$
         client.execute_function(func_name)
         time_total1 = time.time() - time1
 
+        monkeypatch.setenv(UCAI_DATABRICKS_WAREHOUSE_EXECUTE_FUNCTION_WAIT_TIMEOUT.name, "10s")
         time2 = time.time()
-        client.execute_function(func_name, {EXECUTE_FUNCTION_ARG_NAME: {"wait_timeout": "10s"}})
+        client.execute_function(func_name)
         time_total2 = time.time() - time2
         # 30s - 10s = 20s, the time difference should be around 20s
         assert abs(abs(time_total2 - time_total1) - 20) < 5
+
+
+@requires_databricks
+def test_create_and_execute_python_function(client: DatabricksFunctionClient):
+    def simple_func(x: int) -> str:
+        """Test function that returns the string version of x."""
+        return str(x)
+
+    with create_python_function_and_cleanup(client, func=simple_func, schema=SCHEMA) as func_obj:
+        result = client.execute_function(func_obj.full_function_name, {"x": 10})
+        assert result.value == "10"
+
+
+def test_create_python_function_with_invalid_arguments(client: DatabricksFunctionClient):
+    def invalid_func(self, x: int) -> str:
+        """
+        Function with 'self' in the argument.
+
+        Args:
+            x: An integer to convert to a string.
+        """
+        return str(x)
+
+    with pytest.raises(
+        ValueError, match="Parameter 'self' is not allowed in the function signature."
+    ):
+        client.create_python_function(func=invalid_func, catalog=CATALOG, schema=SCHEMA)
+
+    def another_invalid_func(cls, x: int) -> str:
+        """
+        Function with 'cls' in the argument.
+
+        Args:
+            x: An integer to convert to a string.
+        """
+        return str(x)
+
+    with pytest.raises(
+        ValueError, match="Parameter 'cls' is not allowed in the function signature."
+    ):
+        client.create_python_function(func=another_invalid_func, catalog=CATALOG, schema=SCHEMA)
+
+
+@requires_databricks
+def test_create_python_function_with_complex_body(client: DatabricksFunctionClient):
+    def complex_func(a: int, b: int) -> int:
+        """A complex function that uses a try-except block and returns the sum."""
+        try:
+            return a + b
+        except Exception as e:
+            raise ValueError(f"Failed to add numbers") from e
+
+    with create_python_function_and_cleanup(client, func=complex_func, schema=SCHEMA) as func_obj:
+        result = client.execute_function(func_obj.full_function_name, {"a": 1, "b": 2})
+        assert result.value == "3"
+
+
+@requires_databricks
+def test_create_python_function_with_docstring_comments(client: DatabricksFunctionClient):
+    def documented_func(a: int, b: int) -> int:
+        """
+        Adds two integers.
+
+        Args:
+            a: The first integer.
+            b: The second integer.
+
+        Returns:
+            int: The sum of a and b.
+        """
+        return a + b
+
+    with create_python_function_and_cleanup(
+        client, func=documented_func, schema=SCHEMA
+    ) as func_obj:
+        result = client.execute_function(func_obj.full_function_name, {"a": 5, "b": 3})
+        assert result.value == "8"
+
+
+def test_create_python_function_missing_return_type(client: DatabricksFunctionClient):
+    def missing_return_type_func(a: int, b: int):
+        """A function that lacks a return type."""
+        return a + b
+
+    with pytest.raises(
+        ValueError,
+        match="Return type for function 'missing_return_type_func' is not defined. Please provide a return type.",
+    ):
+        client.create_python_function(func=missing_return_type_func, catalog=CATALOG, schema=SCHEMA)
+
+
+def test_create_python_function_not_callable(client: DatabricksFunctionClient):
+    scalar = 42
+
+    with pytest.raises(ValueError, match="The provided function is not callable"):
+        client.create_python_function(func=scalar, catalog=CATALOG, schema=SCHEMA)
+
+
+@requires_databricks
+def test_function_with_list_of_int_return(client: DatabricksFunctionClient):
+    def func_returning_list(a: int) -> List[int]:
+        """
+        A function that returns a list of integers.
+
+        Args:
+            a: An integer to generate the list.
+
+        Returns:
+            List[int]: A list of integers from 0 to a.
+        """
+        return list(range(a))
+
+    with create_python_function_and_cleanup(
+        client, func=func_returning_list, schema=SCHEMA
+    ) as func_obj:
+        result = client.execute_function(func_obj.full_function_name, {"a": 3})
+        # result wrapped as string is due to sql statement execution response parsing
+        assert result.value == '["0","1","2"]'
+
+
+@requires_databricks
+def test_function_with_dict_of_string_to_int_return(client: DatabricksFunctionClient):
+    def func_returning_map(a: int) -> Dict[str, int]:
+        """
+        A function that returns a map from string to integer.
+
+        Args:
+            a: The integer to use in generating the map.
+
+        Returns:
+            Dict[str, int]: A map of string keys to integer values.
+        """
+        return {f"key_{i}": i for i in range(a)}
+
+    with create_python_function_and_cleanup(
+        client, func=func_returning_map, schema=SCHEMA
+    ) as func_obj:
+        result = client.execute_function(func_obj.full_function_name, {"a": 3})
+        # result wrapped as string is due to sql statement execution response parsing
+        assert result.value == '{"key_0":"0","key_1":"1","key_2":"2"}'
+
+
+def test_function_with_invalid_list_return_type(client: DatabricksFunctionClient):
+    def func_with_invalid_list_return(a: int) -> List:
+        """A function returning a list without specifying the element type."""
+        return list(range(a))
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "Error in return type for function 'func_with_invalid_list_return': typing.List. Please define the inner types, e.g., List[int], Tuple[str, int], Dict[str, int]."
+        ),
+    ):
+        client.create_python_function(
+            func=func_with_invalid_list_return, catalog=CATALOG, schema=SCHEMA
+        )
+
+
+def test_function_with_invalid_dict_return_type(client: DatabricksFunctionClient):
+    def func_with_invalid_dict_return(a: int) -> Dict:
+        """A function returning a dict without specifying key and value types."""
+        return {f"key_{i}": i for i in range(a)}
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "Error in return type for function 'func_with_invalid_dict_return': typing.Dict. Please define the inner types, e.g., List[int], Tuple[str, int], Dict[str, int]."
+        ),
+    ):
+        client.create_python_function(
+            func=func_with_invalid_dict_return, catalog=CATALOG, schema=SCHEMA
+        )
+
+
+def test_function_with_union_return_type(client: DatabricksFunctionClient):
+    def func_with_union_return(a: int) -> Union[str, int]:
+        """A function returning a union type."""
+        return a if a % 2 == 0 else str(a)
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "Error in return type for function 'func_with_union_return': typing.Union[str, int]. Union types are not supported in return types."
+        ),
+    ):
+        client.create_python_function(func=func_with_union_return, catalog=CATALOG, schema=SCHEMA)
+
+
+@requires_databricks
+def test_replace_existing_function(client: DatabricksFunctionClient):
+    def simple_func(x: int) -> str:
+        """Test function that returns the string version of x."""
+        return str(x)
+
+    # Create the function for the first time
+    with create_python_function_and_cleanup(client, func=simple_func, schema=SCHEMA) as func_obj:
+        result = client.execute_function(func_obj.full_function_name, {"x": 42})
+        assert result.value == "42"
+
+        # Modify the function definition
+        def simple_func(x: int) -> str:
+            """Modified function that returns 'Modified: ' plus the string version of x."""
+            return f"Modified: {x}"
+
+        # Replace the existing function
+        client.create_python_function(
+            func=simple_func, catalog=CATALOG, schema=SCHEMA, replace=True
+        )
+
+        # Execute the function again to verify it has been replaced
+        result = client.execute_function(func_obj.full_function_name, {"x": 42})
+        assert result.value == "Modified: 42"
+
+
+@requires_databricks
+def test_create_function_without_replace(client: DatabricksFunctionClient):
+    def simple_func(x: int) -> str:
+        """Test function that returns the string version of x."""
+        return str(x)
+
+    # Create the function for the first time
+    with create_python_function_and_cleanup(client, func=simple_func, schema=SCHEMA):
+        # Attempt to create the same function again without replace
+        with pytest.raises(
+            Exception,
+            match=f"Cannot create the function `{CATALOG}`.`{SCHEMA}`.`simple_func` because it already exists",
+        ):
+            client.create_python_function(
+                func=simple_func, catalog=CATALOG, schema=SCHEMA, replace=False
+            )
+
+
+class MockClient:
+    def __init__(self):
+        self.call_count = 0
+        self.refresh_count = 0
+        self._is_default_client = True
+
+    @retry_on_session_expiration
+    def mock_function(self):
+        if self.call_count < 2:
+            self.call_count += 1
+            raise Exception("session_id is no longer usable")
+        return "Success"
+
+    def refresh_client_and_session(self):
+        self.refresh_count += 1
+
+
+def test_retry_on_session_expiration_decorator():
+    client = MockClient()
+
+    result = client.mock_function()
+
+    assert result == "Success"
+    assert client.call_count == 2
+    assert client.refresh_count == 2
+
+
+@patch("time.sleep", return_value=None)
+def test_retry_on_session_expiration_decorator_exceeds_attempts(mock_sleep):
+    client = MockClient()
+    client._is_default_client = True
+
+    @retry_on_session_expiration
+    def mock_function_always_fail(self):
+        self.call_count += 1
+        raise Exception("session_id is no longer usable")
+
+    client.mock_function = mock_function_always_fail.__get__(client)
+
+    with pytest.raises(RuntimeError, match="Failed to execute mock_function_always_fail after"):
+        client.mock_function()
+
+    assert client.call_count == int(UCAI_DATABRICKS_SESSION_RETRY_MAX_ATTEMPTS.get())
+
+
+@pytest.fixture
+def mock_function_info():
+    mock_function_info = MagicMock()
+    mock_function_info.full_name = "catalog.schema.function_name"
+    mock_function_info.catalog_name = "catalog"
+    mock_function_info.schema_name = "schema"
+    mock_function_info.name = "function_name"
+    mock_function_info.data_type = "SCALAR"
+    mock_function_info.input_params.parameters = []
+    return mock_function_info
+
+
+@pytest.fixture
+def mock_spark_session():
+    with patch("databricks.connect.session.DatabricksSession") as mock_session:
+        mock_spark_session = mock_session.builder.getOrCreate.return_value
+        yield mock_spark_session
+
+
+@pytest.fixture
+def mock_workspace_client():
+    with patch("databricks.sdk.WorkspaceClient") as mock_workspace_client:
+        mock_client_instance = mock_workspace_client.return_value
+        yield mock_client_instance
+
+
+def test_execute_function_success(mock_workspace_client, mock_spark_session, mock_function_info):
+    class MockResult:
+        def collect(self):
+            return [[42]]
+
+    mock_spark_session.sql.return_value = MockResult()
+
+    client = DatabricksFunctionClient(client=mock_workspace_client)
+
+    client.set_default_spark_session = MagicMock()
+    client.spark = mock_spark_session
+
+    client.get_function = MagicMock(return_value=mock_function_info)
+
+    result = client.execute_function("catalog.schema.function_name")
+
+    assert result.value == "42"
+    assert result.format == "SCALAR"
+    assert not result.truncated
+
+    expected_sql = "SELECT `catalog`.`schema`.`function_name`()"
+    mock_spark_session.sql.assert_called_with(sqlQuery=expected_sql)
+
+
+def test_execute_function_with_retry(mock_workspace_client, mock_spark_session, mock_function_info):
+    with patch("time.sleep", return_value=None):
+        call_count = {"count": 0}
+
+        def side_effect(*args, **kwargs):
+            call_count["count"] += 1
+            if call_count["count"] == 1:
+                raise Exception("session_id is no longer usable")
+            else:
+
+                class MockResult:
+                    def collect(self):
+                        return [[42]]
+
+                return MockResult()
+
+        mock_spark_session.sql.side_effect = side_effect
+
+        client = DatabricksFunctionClient(client=mock_workspace_client)
+        client.set_default_spark_session = MagicMock()
+        client.spark = mock_spark_session
+        client._is_default_client = True
+
+        client.get_function = MagicMock(return_value=mock_function_info)
+        client.refresh_client_and_session = MagicMock()
+
+        result = client.execute_function("catalog.schema.function_name")
+
+        assert result.value == "42"
+        assert result.format == "SCALAR"
+        assert not result.truncated
+
+        client.refresh_client_and_session.assert_called_once()
+        expected_sql = "SELECT `catalog`.`schema`.`function_name`()"
+        mock_spark_session.sql.assert_called_with(sqlQuery=expected_sql)
+        assert mock_spark_session.sql.call_count == 2
+        assert client.refresh_client_and_session.call_count == 1
+
+
+def test_create_function_with_retry(mock_workspace_client, mock_spark_session):
+    with patch("time.sleep", return_value=None) as mock_time_sleep:
+        sql_function_body = f"""CREATE FUNCTION catalog.schema.test(s STRING)
+RETURNS STRING
+LANGUAGE PYTHON
+AS $$
+    return s
+$$
+"""
+
+        mock_spark_session.sql.side_effect = [Exception("session_id is no longer usable"), None]
+
+        client = DatabricksFunctionClient(client=mock_workspace_client)
+        client._is_default_client = True
+        client.set_default_spark_session = MagicMock()
+        client.spark = mock_spark_session
+
+        mock_function_info = MagicMock()
+        client.get_function = MagicMock(return_value=mock_function_info)
+        client.refresh_client_and_session = MagicMock()
+
+        result = client.create_function(sql_function_body=sql_function_body)
+
+        assert result == mock_function_info
+
+        client.refresh_client_and_session.assert_called_once()
+
+        assert mock_spark_session.sql.call_count == 2
+        mock_spark_session.sql.assert_called_with(sql_function_body)
+
+        expected_function_name = extract_function_name(sql_function_body)
+        client.get_function.assert_called_with(expected_function_name)
+
+        assert mock_time_sleep.call_count == 1
+
+
+def test_create_function_retry_exceeds_attempts(mock_workspace_client, mock_spark_session):
+    with patch("time.sleep", return_value=None) as mock_time_sleep:
+        sql_function_body = """CREATE FUNCTION `catalog`.`schema`.`function_name`()
+RETURNS INT
+AS $$ return 1 $$"""
+
+        mock_spark_session.sql.side_effect = Exception("session_id is no longer usable")
+
+        client = DatabricksFunctionClient(client=mock_workspace_client)
+        client._is_default_client = True
+        client.set_default_spark_session = MagicMock()
+        client.spark = mock_spark_session
+        client.refresh_client_and_session = MagicMock()
+
+        with pytest.raises(RuntimeError, match="Failed to execute create_function after"):
+            client.create_function(sql_function_body=sql_function_body)
+
+        max_attempts = int(UCAI_DATABRICKS_SESSION_RETRY_MAX_ATTEMPTS.get())
+        assert client.refresh_client_and_session.call_count == max_attempts - 1
+        assert mock_spark_session.sql.call_count == max_attempts
+        assert mock_time_sleep.call_count == max_attempts - 1
+
+
+def test_no_retry_with_custom_client(mock_workspace_client, mock_spark_session, mock_function_info):
+    mock_spark_session.sql.side_effect = Exception("session_id is no longer usable")
+
+    client = DatabricksFunctionClient(client=mock_workspace_client)
+    client.set_default_spark_session = MagicMock()
+    client.spark = mock_spark_session
+    client._is_default_client = False
+
+    client.get_function = MagicMock(return_value=mock_function_info)
+
+    client.refresh_client_and_session = MagicMock()
+
+    with pytest.raises(
+        RuntimeError,
+        match="Failed to execute _execute_uc_functions_with_serverless due to session expiration. "
+        "Unable to automatically refresh session when using a custom client.",
+    ):
+        client.execute_function("catalog.schema.function_name")
+
+    client.refresh_client_and_session.assert_not_called()
+
+    assert mock_spark_session.sql.call_count == 1

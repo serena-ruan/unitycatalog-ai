@@ -1,45 +1,44 @@
 import base64
-import inspect
+import functools
 import json
 import logging
-import os
 import re
 import time
 from dataclasses import dataclass
 from decimal import Decimal
 from io import StringIO
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from typing_extensions import override
 
 from ucai.core.client import BaseFunctionClient, FunctionExecutionResult
+from ucai.core.envs.databricks_env_vars import (
+    UCAI_DATABRICKS_SERVERLESS_EXECUTION_RESULT_ROW_LIMIT,
+    UCAI_DATABRICKS_SESSION_RETRY_MAX_ATTEMPTS,
+    UCAI_DATABRICKS_WAREHOUSE_EXECUTE_FUNCTION_BYTE_LIMIT,
+    UCAI_DATABRICKS_WAREHOUSE_EXECUTE_FUNCTION_ROW_LIMIT,
+    UCAI_DATABRICKS_WAREHOUSE_EXECUTE_FUNCTION_WAIT_TIMEOUT,
+    UCAI_DATABRICKS_WAREHOUSE_RETRY_TIMEOUT,
+)
 from ucai.core.paged_list import PagedList
+from ucai.core.utils.callable_utils import generate_sql_function_body
 from ucai.core.utils.type_utils import (
     column_type_to_python_type,
     convert_timedelta_to_interval_str,
     is_time_type,
 )
-from ucai.core.utils.validation_utils import validate_full_function_name, validate_param
+from ucai.core.utils.validation_utils import (
+    FullFunctionName,
+    validate_param,
+)
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.service.catalog import (
-        CreateFunction,
         FunctionInfo,
         FunctionParameterInfo,
     )
     from databricks.sdk.service.sql import StatementParameterListItem, StatementState
-
-EXECUTE_FUNCTION_ARG_NAME = "__execution_args__"
-DEFAULT_EXECUTE_FUNCTION_ARGS = {
-    "wait_timeout": "30s",
-    "row_limit": 100,
-    "byte_limit": 4096,
-}
-UNITYCATALOG_AI_CLIENT_EXECUTION_TIMEOUT = "UNITYCATALOG_AI_CLIENT_EXECUTION_TIMEOUT"
-DEFAULT_UC_AI_CLIENT_EXECUTION_TIMEOUT = "120"
-UC_AI_CLIENT_EXECUTION_RESULT_ROW_LIMIT = "UC_AI_CLIENT_EXECUTION_RESULT_ROW_LIMIT"
-DEFAULT_UC_AI_CLIENT_EXECUTION_RESULT_ROW_LIMIT = "100"
 
 DATABRICKS_CONNECT_SUPPORTED_VERSION = "15.1.0"
 DATABRICKS_CONNECT_IMPORT_ERROR_MESSAGE = (
@@ -54,11 +53,14 @@ DATABRICKS_CONNECT_VERSION_NOT_SUPPORTED_ERROR_MESSAGE = (
     f"`pip install databricks-connect=={DATABRICKS_CONNECT_SUPPORTED_VERSION}` "
     "to use serverless compute in Databricks. Please note this requires python>=3.10."
 )
+SESSION_RETRY_BASE_DELAY = 1
+SESSION_RETRY_MAX_DELAY = 32
+SESSION_EXCEPTION_MESSAGE = "session_id is no longer usable"
 
 _logger = logging.getLogger(__name__)
 
 
-def get_default_databricks_workspace_client() -> "WorkspaceClient":
+def get_default_databricks_workspace_client(profile=None) -> "WorkspaceClient":
     try:
         from databricks.sdk import WorkspaceClient
     except ImportError as e:
@@ -67,7 +69,7 @@ def get_default_databricks_workspace_client() -> "WorkspaceClient":
             "If you want to use databricks backend then "
             "please install it with `pip install databricks-sdk`."
         ) from e
-    return WorkspaceClient()
+    return WorkspaceClient(profile=profile)
 
 
 def _validate_databricks_connect_available() -> bool:
@@ -90,17 +92,28 @@ def _try_get_spark_session_in_dbr() -> Any:
         return
 
 
+def _is_in_databricks_notebook_environment() -> bool:
+    try:
+        from dbruntime.databricks_repl_context import get_context
+
+        return get_context().isInNotebook
+    except Exception:
+        return False
+
+
 def extract_function_name(sql_body: str) -> str:
     """
     Extract function name from the sql body.
     CREATE FUNCTION syntax reference: https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-ddl-create-sql-function.html#syntax
     """
+    # NOTE: catalog/schema/function names follow guidance here:
+    # https://docs.databricks.com/en/sql/language-manual/sql-ref-names.html#catalog-name
     pattern = re.compile(
         r"""
         CREATE\s+(?:OR\s+REPLACE\s+)?      # Match 'CREATE OR REPLACE' or just 'CREATE'
         (?:TEMPORARY\s+)?                  # Match optional 'TEMPORARY'
         FUNCTION\s+(?:IF\s+NOT\s+EXISTS\s+)?  # Match 'FUNCTION' and optional 'IF NOT EXISTS'
-        ([\w.]+)                           # Capture the function name (including schema if present)
+        (?P<name>[^ /.]+\.[^ /.]+\.[^ /.]+)          # Capture the function name (including schema if present)
         \s*\(                              # Match opening parenthesis after function name
     """,
         re.IGNORECASE | re.VERBOSE,
@@ -108,13 +121,54 @@ def extract_function_name(sql_body: str) -> str:
 
     match = pattern.search(sql_body)
     if match:
-        return match.group(1)
+        result = match.group("name")
+        full_function_name = FullFunctionName.validate_full_function_name(result)
+        # backticks are only required in SQL, not in python APIs
+        return str(full_function_name)
     raise ValueError(
-        f"Could not extract function name from the sql body {sql_body}.\nPlease "
+        f"Could not extract function name from the sql body: {sql_body}.\nPlease "
         "make sure the sql body follows the syntax of CREATE FUNCTION "
         "statement in Databricks: "
         "https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-ddl-create-sql-function.html#syntax."
     )
+
+
+def retry_on_session_expiration(func):
+    """
+    Decorator to retry a method upon session expiration errors with exponential backoff.
+    """
+    max_attempts = int(UCAI_DATABRICKS_SESSION_RETRY_MAX_ATTEMPTS.get())
+
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return func(self, *args, **kwargs)
+            except Exception as e:
+                error_message = str(e)
+                if SESSION_EXCEPTION_MESSAGE in error_message:
+                    if not self._is_default_client:
+                        refresh_message = f"Failed to execute {func.__name__} due to session expiration. Unable to automatically refresh session when using a custom client."
+                        raise RuntimeError(refresh_message) from e
+
+                    if attempt < max_attempts:
+                        delay = min(
+                            SESSION_RETRY_BASE_DELAY * (2 ** (attempt - 1)),
+                            SESSION_RETRY_MAX_DELAY,
+                        )
+                        _logger.warning(
+                            f"Session expired. Attempt {attempt} of {max_attempts}. Refreshing session and retrying after {delay} seconds..."
+                        )
+                        self.refresh_client_and_session()
+                        time.sleep(delay)
+                        continue
+                    else:
+                        refresh_failure_message = f"Failed to execute {func.__name__} after {max_attempts} attempts due to session expiration."
+                        raise RuntimeError(refresh_failure_message) from e
+                else:
+                    raise
+
+    return wrapper
 
 
 class DatabricksFunctionClient(BaseFunctionClient):
@@ -140,12 +194,12 @@ class DatabricksFunctionClient(BaseFunctionClient):
                 not needed if serverless is enabled in the databricks workspace. Defaults to None.
             profile: The configuration profile to use for databricks connect. Defaults to None.
         """
-        self.client = client or get_default_databricks_workspace_client()
+        self.client = client or get_default_databricks_workspace_client(profile=profile)
         self.warehouse_id = warehouse_id
         self._validate_warehouse_type()
         self.profile = profile
-        # TODO: add CI to run this in Databricks notebook
         self.spark = _try_get_spark_session_in_dbr()
+        self._is_default_client = client is None
         super().__init__()
 
     def set_default_spark_session(self):
@@ -174,12 +228,25 @@ class DatabricksFunctionClient(BaseFunctionClient):
                 "https://docs.databricks.com/en/admin/sql/serverless.html#enable-serverless-sql-warehouses."
             )
 
+    def refresh_client_and_session(self):
+        """
+        Refreshes the databricks client and spark session if the session_id has been invalidated due to expiration of temporary credentials.
+        If the client is running within an interactive Databricks notebook environment, the spark session is not terminated.
+        """
+
+        _logger.info("Refreshing Databricks client and Spark session due to session expiration.")
+        self.client = get_default_databricks_workspace_client(profile=self.profile)
+        if not _is_in_databricks_notebook_environment:
+            self.stop_spark_session()
+            self.set_default_spark_session()
+        self.spark = _try_get_spark_session_in_dbr()
+
+    @retry_on_session_expiration
     @override
     def create_function(
         self,
         *,
         sql_function_body: Optional[str] = None,
-        function_info: Optional["CreateFunction"] = None,
     ) -> "FunctionInfo":
         """
         Create a UC function with the given sql body or function info.
@@ -192,28 +259,165 @@ class DatabricksFunctionClient(BaseFunctionClient):
                 It should follow the syntax of CREATE FUNCTION statement in Databricks.
                 Ref: https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-ddl-create-sql-function.html#syntax
 
-            function_info: The function info. Defaults to None.
-
         Returns:
             FunctionInfo: The created function info.
         """
-        if sql_function_body and function_info:
-            raise ValueError("Only one of sql_function_body and function_info should be provided.")
         if sql_function_body:
             self.set_default_spark_session()
-            try:
-                # TODO: add timeout
-                self.spark.sql(sql_function_body)
-            except Exception as e:
-                raise RuntimeError(
-                    f"Failed to create function with sql body: {sql_function_body}"
-                ) from e
+            # TODO: add timeout
+            self.spark.sql(sql_function_body)
             return self.get_function(extract_function_name(sql_function_body))
-        if function_info:
-            # TODO: support this after CreateFunction bug is fixed in databricks-sdk
-            raise NotImplementedError("Creating function using function_info is not supported yet.")
-            return self.client.functions.create(function_info)
-        raise ValueError("Either function_info or sql_function_body should be provided.")
+        # TODO: support creating from function_info after CreateFunction bug is fixed in databricks-sdk
+        # return self.client.functions.create(function_info)
+        raise ValueError("sql_function_body must be provided.")
+
+    @retry_on_session_expiration
+    @override
+    def create_python_function(
+        self, *, func: Callable[..., Any], catalog: str, schema: str, replace: bool = False
+    ) -> "FunctionInfo":
+        # TODO: migrate this guide to the documentation
+        """
+        Create a Unity Catalog (UC) function directly from a Python function.
+
+        This API allows you to convert a Python function into a Unity Catalog User-Defined Function (UDF).
+        It automates the creation of UC functions while ensuring that the Python function meets certain
+        criteria and adheres to best practices.
+
+        **Requirements:**
+
+        1. **Type Annotations**:
+            - The Python function must use argument and return type annotations. These annotations are used
+            to generate the SQL signature of the UC function.
+            - Supported Python types and their corresponding UC types are as follows:
+
+            | Python Type          | Unity Catalog Type       |
+            |----------------------|--------------------------|
+            | `int`                | `LONG`                |
+            | `float`              | `DOUBLE`                 |
+            | `str`                | `STRING`                 |
+            | `bool`               | `BOOLEAN`                |
+            | `Decimal`            | `DECIMAL`                |
+            | `datetime.date`      | `DATE`                   |
+            | `datetime.timedelta` | `INTERVAL DAY TO SECOND` |
+            | `datetime.datetime`  | `TIMESTAMP`              |
+            | `list`               | `ARRAY`                  |
+            | `tuple`              | `ARRAY`                  |
+            | `dict`               | `MAP`                    |
+            | `bytes`              | `BINARY`                 |
+
+            - **Example of a valid function**:
+            ```python
+            def my_function(a: int, b: str) -> float:
+                return a + len(b)
+            ```
+
+            - **Invalid function (missing type annotations)**:
+            ```python
+            def my_function(a, b):
+                return a + len(b)
+            ```
+            Attempting to create a UC function from a function without type hints will raise an error, as the
+            system relies on type hints to generate the UC function's signature.
+
+            - For container types like `list`, `tuple` and `dict`, the inner types **must be specified** and must be
+            uniform (Union types are not permitted). For example:
+
+            ```python
+            def my_function(a: List[int], b: Dict[str, float]) -> List[str]:
+                return [str(x) for x in a]
+            ```
+
+            - var args and kwargs are not supported. All arguments must be explicitly defined in the function signature.
+
+        2. **Google Docstring Guidelines**:
+            - It is required to include detailed Python docstrings in your function to provide additional context.
+            The docstrings will be used to auto-generate parameter descriptions and a function-level comment.
+
+            - A **function description** must be provided at the beginning of the docstring (within the triple quotes)
+            to describe the function's purpose. This description will be used as the function-level comment in the UC function.
+            The description **must** be included in the first portion of the docstring prior to any argument descriptions.
+
+            - **Parameter descriptions** are optional but recommended. If provided, they should be included in the
+            Google-style docstring. The parameter descriptions will be used to auto-generate detailed descriptions for
+            each parameter in the UC function. The additional context provided by these argument descriptions can be
+            useful for agent applications to understand context of the arguments and their purpose.
+
+            - Only **Google-style docstrings** are supported for this auto-generation. For example:
+            ```python
+            def my_function(a: int, b: str) -> float:
+                \"\"\"
+                Adds the length of a string to an integer.
+
+                Args:
+                    a (int): The integer to add to.
+                    b (str): The string whose length will be added.
+
+                Returns:
+                    float: The sum of the integer and the string length.
+                \"\"\"
+                return a + len(b)
+            ```
+            - If docstrings do not conform to Google-style for specifying arguments descriptions, parameter descriptions
+             will default to `"Parameter <name>"`, and no further information will be provided in the function comment
+             for the given parameter.
+
+            For examples of Google docstring guidelines, see
+            [this link](https://sphinxcontrib-napoleon.readthedocs.io/en/latest/example_google.html)
+
+        3. **External Dependencies**:
+            - Unity Catalog UDFs are limited to Python standard libraries and Databricks-provided libraries. If your
+            function relies on unsupported external dependencies, the created UC function may fail at runtime.
+            - It is strongly recommended to test the created function by executing it before integrating it into
+            GenAI or other tools.
+
+        **Function Metadata**:
+        - Docstrings (if provided and Google-style) will automatically be included as detailed descriptions for
+        function parameters as well as for the function itself, enhancing the discoverability of the utility of your
+        UC function.
+
+        **Example**:
+        ```python
+        def example_function(x: int, y: int) -> float:
+            \"\"\"
+            Multiplies an integer by the length of a string.
+
+            Args:
+                x (int): The number to be multiplied.
+                y (int): A string whose length will be used for multiplication.
+
+            Returns:
+                float: The product of the integer and the string length.
+            \"\"\"
+            return x * len(y)
+
+        client.create_python_function(
+            func=example_function,
+            catalog="my_catalog",
+            schema="my_schema"
+        )
+        ```
+
+        **Overwriting a function**:
+        - If a function with the same name already exists in the specified catalog and schema, the function will not be
+        created by default. To overwrite the existing function, set the `replace` parameter to `True`.
+
+        Args:
+            func (Callable): The Python function to convert into a UDF.
+            catalog (str): The catalog name in which to create the function.
+            schema (str): The schema name in which to create the function.
+            replace (bool): Whether to replace the function if it already exists. Defaults to False.
+
+        Returns:
+            FunctionInfo: Metadata about the created function, including its name and signature.
+        """
+
+        if not callable(func):
+            raise ValueError("The provided function is not callable.")
+
+        sql_function_body = generate_sql_function_body(func, catalog, schema, replace)
+
+        return self.create_function(sql_function_body=sql_function_body)
 
     @override
     def get_function(self, function_name: str, **kwargs: Any) -> "FunctionInfo":
@@ -231,8 +435,8 @@ class DatabricksFunctionClient(BaseFunctionClient):
         Returns:
             FunctionInfo: The function info.
         """
-        full_func_name = validate_full_function_name(function_name)
-        if "*" in full_func_name.function_name:
+        full_func_name = FullFunctionName.validate_full_function_name(function_name)
+        if "*" in full_func_name.function:
             raise ValueError(
                 "function name cannot include *, to get all functions in a catalog and schema, "
                 "please use list_functions API instead."
@@ -257,7 +461,7 @@ class DatabricksFunctionClient(BaseFunctionClient):
             page_token: The token for the next page. Defaults to None.
 
         Returns:
-            PageList[List[FunctionInfo]]: The paginated list of function infos.
+            PageList[FunctionInfo]: The paginated list of function infos.
         """
         from databricks.sdk.service.catalog import FunctionInfo
 
@@ -349,6 +553,7 @@ class DatabricksFunctionClient(BaseFunctionClient):
         else:
             return self._execute_uc_functions_with_serverless(function_info, parameters)
 
+    @retry_on_session_expiration
     def _execute_uc_functions_with_warehouse(
         self, function_info: "FunctionInfo", parameters: Dict[str, Any]
     ) -> FunctionExecutionResult:
@@ -356,48 +561,14 @@ class DatabricksFunctionClient(BaseFunctionClient):
 
         _logger.info("Executing function using client warehouse_id.")
 
-        passed_execute_statement_args = parameters.pop(EXECUTE_FUNCTION_ARG_NAME, {})
-        if (
-            passed_execute_statement_args
-            and function_info.input_params
-            and function_info.input_params.parameters
-            and any(
-                p.name == EXECUTE_FUNCTION_ARG_NAME for p in function_info.input_params.parameters
-            )
-        ):
-            raise ValueError(
-                "Parameter name conflicts with the reserved argument name for executing "
-                f"functions: {EXECUTE_FUNCTION_ARG_NAME}. "
-                f"Please rename the parameter {EXECUTE_FUNCTION_ARG_NAME}."
-            )
-
-        # avoid modifying the original dict
-        execute_statement_args = {**DEFAULT_EXECUTE_FUNCTION_ARGS}
-        allowed_execute_statement_args = inspect.signature(
-            self.client.statement_execution.execute_statement
-        ).parameters
-        if not any(
-            p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
-            for p in allowed_execute_statement_args.values()
-        ):
-            invalid_params: Set[str] = set()
-            for k, v in passed_execute_statement_args.items():
-                if k in allowed_execute_statement_args:
-                    execute_statement_args[k] = v
-                else:
-                    invalid_params.add(k)
-            if invalid_params:
-                raise ValueError(
-                    f"Invalid parameters for executing functions: {invalid_params}. "
-                    f"Allowed parameters are: {allowed_execute_statement_args.keys()}."
-                )
-
         parametrized_statement = get_execute_function_sql_stmt(function_info, parameters)
         response = self.client.statement_execution.execute_statement(
             statement=parametrized_statement.statement,
             warehouse_id=self.warehouse_id,
             parameters=parametrized_statement.parameters,
-            **execute_statement_args,  # type: ignore
+            wait_timeout=UCAI_DATABRICKS_WAREHOUSE_EXECUTE_FUNCTION_WAIT_TIMEOUT.get(),
+            row_limit=int(UCAI_DATABRICKS_WAREHOUSE_EXECUTE_FUNCTION_ROW_LIMIT.get()),
+            byte_limit=int(UCAI_DATABRICKS_WAREHOUSE_EXECUTE_FUNCTION_BYTE_LIMIT.get()),
         )
         # TODO: the first time the warehouse is invoked, it might take longer than
         # expected, so it's still pending even after 6 times of retry;
@@ -408,12 +579,7 @@ class DatabricksFunctionClient(BaseFunctionClient):
             _logger.info("Retrying to get statement execution status...")
             wait_time = 0
             retry_cnt = 0
-            client_execution_timeout = int(
-                os.environ.get(
-                    UNITYCATALOG_AI_CLIENT_EXECUTION_TIMEOUT,
-                    DEFAULT_UC_AI_CLIENT_EXECUTION_TIMEOUT,
-                )
-            )
+            client_execution_timeout = int(UCAI_DATABRICKS_WAREHOUSE_RETRY_TIMEOUT.get())
             while wait_time < client_execution_timeout:
                 wait = min(2**retry_cnt, client_execution_timeout - wait_time)
                 time.sleep(wait)
@@ -427,8 +593,8 @@ class DatabricksFunctionClient(BaseFunctionClient):
                 return FunctionExecutionResult(
                     error=f"Statement execution is still {response.status.state.value.lower()} after {wait_time} "
                     "seconds. Please increase the wait_timeout argument for executing "
-                    f"the function or increase {UNITYCATALOG_AI_CLIENT_EXECUTION_TIMEOUT} environment "
-                    f"variable for increasing retrying time, default value is {DEFAULT_UC_AI_CLIENT_EXECUTION_TIMEOUT} seconds."
+                    f"the function or increase {UCAI_DATABRICKS_WAREHOUSE_RETRY_TIMEOUT.name} environment "
+                    f"variable for increasing retrying time, default value is {UCAI_DATABRICKS_WAREHOUSE_RETRY_TIMEOUT.default_value} seconds."
                 )
         if response.status is None:
             return FunctionExecutionResult(error=f"Statement execution failed: {response}")
@@ -480,40 +646,44 @@ class DatabricksFunctionClient(BaseFunctionClient):
                 format="CSV", value=csv_buffer.getvalue(), truncated=truncated
             )
 
+    @retry_on_session_expiration
     def _execute_uc_functions_with_serverless(
         self, function_info: "FunctionInfo", parameters: Dict[str, Any]
     ) -> FunctionExecutionResult:
         _logger.info("Using databricks connect to execute functions with serverless compute.")
         self.set_default_spark_session()
         sql_command = get_execute_function_sql_command(function_info, parameters)
-        try:
-            result = self.spark.sql(sqlQuery=sql_command)
-            if is_scalar(function_info):
-                return FunctionExecutionResult(format="SCALAR", value=str(result.collect()[0][0]))
-            else:
-                row_limit = int(
-                    os.environ.get(
-                        UC_AI_CLIENT_EXECUTION_RESULT_ROW_LIMIT,
-                        DEFAULT_UC_AI_CLIENT_EXECUTION_RESULT_ROW_LIMIT,
-                    )
-                )
-                truncated = result.count() > row_limit
-                pdf = result.limit(row_limit).toPandas()
-                csv_buffer = StringIO()
-                pdf.to_csv(csv_buffer, index=False)
-                return FunctionExecutionResult(
-                    format="CSV", value=csv_buffer.getvalue(), truncated=truncated
-                )
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to execute function with function name: {function_info.full_name}"
-            ) from e
+        result = self.spark.sql(sqlQuery=sql_command)
+        if is_scalar(function_info):
+            return FunctionExecutionResult(format="SCALAR", value=str(result.collect()[0][0]))
+        else:
+            row_limit = int(UCAI_DATABRICKS_SERVERLESS_EXECUTION_RESULT_ROW_LIMIT.get())
+            truncated = result.count() > row_limit
+            pdf = result.limit(row_limit).toPandas()
+            csv_buffer = StringIO()
+            pdf.to_csv(csv_buffer, index=False)
+            return FunctionExecutionResult(
+                format="CSV", value=csv_buffer.getvalue(), truncated=truncated
+            )
 
     @override
-    def validate_input_params(self, input_params: Any, parameters: Dict[str, Any]) -> None:
-        super().validate_input_params(
-            input_params, {k: v for k, v in parameters.items() if k != EXECUTE_FUNCTION_ARG_NAME}
-        )
+    def delete_function(
+        self,
+        function_name: str,
+        force: Optional[bool] = None,
+    ) -> None:
+        """
+        Delete a function by its full name.
+
+        Args:
+            function_name: The full name of the function to delete.
+                It should be in the format of "catalog.schema.function_name".
+            force: Force deletion even if the function is not empty. This
+                parameter is used by underlying databricks workspace client
+                when deleting a function. If it is None then the parameter
+                is not included in the request. Defaults to None.
+        """
+        self.client.functions.delete(function_name, force=force)
 
     @override
     def to_dict(self):
