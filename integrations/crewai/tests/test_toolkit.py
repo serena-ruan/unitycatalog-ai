@@ -1,9 +1,3 @@
-import os
-
-os.environ["WAREHOUSE_ID"] = "475b94ddc7cd5211"
-os.environ["SCHEMA"] = "default"
-
-# MAIN
 import json
 import os
 from unittest import mock
