@@ -50,24 +50,15 @@ create a Python function that is wrapped within the SQL body format for UC and t
 # Replace with your own catalog and schema for where your function will be stored
 CATALOG = "catalog"
 SCHEMA = "schema"
+function_name = f"{CATALOG}.{SCHEMA}.make_uppercase"
 
-func_name = f"{CATALOG}.{SCHEMA}.python_exec"
-# define the function body in UC SQL functions format
-sql_body = f"""CREATE OR REPLACE FUNCTION {func_name}(code STRING COMMENT 'Python code to execute. Remember to print the final result to stdout.')
-RETURNS STRING
-LANGUAGE PYTHON
-COMMENT 'Executes Python code and returns its stdout.'
-AS $$
-    import sys
-    from io import StringIO
-    stdout = StringIO()
-    sys.stdout = stdout
-    exec(code)
-    return stdout.getvalue()
-$$
-"""
+def make_uppercase(s: str) -> str:
+    """
+    Convert the string to uppercase.
+    """
+    return s.upper()
 
-client.create_function(sql_function_body=sql_body)
+response = client.create_python_function(func=make_uppercase, catalog=CATALOG, schema=SCHEMA)
 ```
 
 Now that the function exists within the Catalog and Schema that we defined, we can interface with it from CrewAI using the ucai_crewai package.
@@ -81,7 +72,7 @@ an LLM), which are exposed with a UC interface through the use of the ucai_crewa
 from ucai_crewai.toolkit import UCFunctionToolkit
 
 # Pass the UC function name that we created to the constructor
-toolkit = UCFunctionToolkit(function_names=[func_name])
+toolkit = UCFunctionToolkit(function_names=[function_name])
 
 # Get the CrewAI-compatible tools definitions
 tools = toolkit.tools
@@ -92,7 +83,7 @@ If you would like to validate that your tool is functional prior to integrating 
 ```python
 my_tool = tools[0]
 
-my_tool.fn(**{"code": "print(1)"})
+my_tool.fn(**{"s": "lowercase string"})
 ```
 
 #### Utilize our function as a tool within a CrewAI `Crew`
@@ -154,58 +145,67 @@ Output
 [2024-10-08 14:29:25][INFO]: Planning the crew execution
 
 # Agent: Simple coder
-## Task: Call a tool1. **Identify the Objective**: The Simple Coder aims to create a program that prints "Hello Unity Catalog!" by utilizing the UnityCatalogTool.
+## Task: Call a tool1. **Agent Identification**: Identify the agent responsible for this task, which is "Simple Coder".
 
-2. **Preparation for Tool Call**:
+2. **Agent Goal Confirmation**: Confirm the goal of the Simple Coder is to create a program that prints "Hello Unity Catalog!".
+
+3. **Tool Selection**: The appropriate tool to use is the `UnityCatalogTool` named `main__default__make_uppercase`.
+
+4. **Initial Setup**: Ensure the Simple Coder has access to the necessary environment to write and execute code.
+
+5. **Code Implementation**: The Simple Coder will write the following code snippet:
+   ```python
+   def main():
+       print("Hello Unity Catalog!")
    
-   - Ensure that the Python environment is set and accessible to execute the code.
-   - Prepare the code snippet that needs to be executed. In this case, the Python code is as follows:
+   main()
+   ```
+   - The above code fulfills the requirement of printing "Hello Unity Catalog!" as expected.
 
-     ```python
-     print("Hello Unity Catalog!")
-     ```
+6. **Using the Tool**: The Simple Coder will then use the `UnityCatalogTool` to convert the string "Hello Unity Catalog!" to uppercase:
+   - Prepare the arguments schema for the tool:
+     - `s: "Hello Unity Catalog!"`.
+   - Call the tool function:
+   ```python
+   result = main__default__make_uppercase(s="Hello Unity Catalog!")
+   ```
 
-3. **Utilize the UnityCatalogTool**:
-   
-   - Call the `main__default__python_exec()` function from the UnityCatalogTool with the appropriate Python code as an argument.
-   - This is done by structuring the call to the tool as follows:
+7. **Output Handling**: The Simple Coder will ensure that the result of the tool call is stored and can be reviewed.
 
-     ```python
-     result = UnityCatalogTool.main__default__python_exec(code="print('Hello Unity Catalog!')")
-     ```
-
-   - Ensure that the call captures the stdout that will print "Hello Unity Catalog!".
-
-4. **Execute and Capture Output**:
-   
-   - Execute the code through the above function call in the specified environment.
-   - The expected output is the string "Hello Unity Catalog!" which will be displayed on the console.
-
-5. **Confirmation**:
-   
-   - Check the return value of the tool call to ensure it executed correctly.
-   - Log or print the result confirming the tool invocation was successful.
 
 
 # Agent: Simple coder
-## Thought: I need to create a program that prints "Hello Unity Catalog!" using the available tool.
-## Using tool: main__default__python_exec
+## Thought: I will print "Hello Unity Catalog!" and then convert that string to uppercase using the specified tool.
+## Using tool: main__default__make_uppercase
 ## Tool Input: 
-"{\"code\": \"print('Hello Unity Catalog!')\"}"
+"{\"s\": \"Hello Unity Catalog!\"}"
 ## Tool Output: 
-{"format": "SCALAR", "value": "Hello Unity Catalog!\n", "truncated": false}
+{"format": "SCALAR", "value": "HELLO UNITY CATALOG!", "truncated": false}
 
 
 # Agent: Simple coder
 ## Final Answer: 
-Hello Unity Catalog!
+HELLO UNITY CATALOG!
 
 
 # Agent: reviewer
-## Task: Review the tool call output. Once complete, stop.
+## Task: Review the tool call output. Once complete, stop.1. **Agent Identification**: Identify the agent responsible for this task, which is "Reviewer".
+
+2. **Expected Outcome Review**: The Reviewer’s goal is to ensure that the Simple Coder has called the function correctly and that it outputs the expected answer.
+
+3. **Output Review Process**: The Reviewer will retrieve the output generated by the Simple Coder's tool call to `main__default__make_uppercase`.
+   - The expected output should be the string "HELLO UNITY CATALOG!" since it is the uppercase conversion of the input.
+
+4. **Assessment**: The Reviewer will compare the received output against the expected output:
+   - If the output matches the expected output ("HELLO UNITY CATALOG!"), then the function call is verified as successful.
+   - If there is a discrepancy, the Reviewer will notify the Simple Coder to correct the issue.
+
+5. **Completion**: Once the review is complete and the expected output is confirmed:
+   - The Reviewer will log the result and confirm the completion of the task.
+   - The Reviewer will stop any further actions as the task is finished.
 
 
 # Agent: reviewer
 ## Final Answer: 
-Hello Unity Catalog!
+The output generated by the Simple Coder's tool call to `main__default__make_uppercase` has been reviewed. The expected output is "HELLO UNITY CATALOG!" which matches the received output perfectly. Therefore, the function call has been verified as successful, confirming that the task is complete. The result has been logged accordingly, and no further actions are needed as the task is finished.
 ```
