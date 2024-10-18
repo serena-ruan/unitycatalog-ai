@@ -154,21 +154,21 @@ Output
 4. **Initial Setup**: Ensure the Simple Coder has access to the necessary environment to write and execute code.
 
 5. **Code Implementation**: The Simple Coder will write the following code snippet:
-   ```python
+   \`\`\`python
    def main():
        print("Hello Unity Catalog!")
    
    main()
-   ```
+   \`\`\`
    - The above code fulfills the requirement of printing "Hello Unity Catalog!" as expected.
 
 6. **Using the Tool**: The Simple Coder will then use the `UnityCatalogTool` to convert the string "Hello Unity Catalog!" to uppercase:
    - Prepare the arguments schema for the tool:
      - `s: "Hello Unity Catalog!"`.
    - Call the tool function:
-   ```python
+   \`\`\`python
    result = main__default__make_uppercase(s="Hello Unity Catalog!")
-   ```
+   \`\`\`
 
 7. **Output Handling**: The Simple Coder will ensure that the result of the tool call is stored and can be reviewed.
 
