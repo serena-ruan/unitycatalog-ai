@@ -14,7 +14,6 @@ pip install ucai-crewai
 
 To get started with the latest version, install from PyPI:
 
-<!-- TODO: update this to the actual path where the repo's main branch will live -->
 ```sh
 pip install ucai-crewai
 ```
