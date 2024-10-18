@@ -16,7 +16,7 @@ To get started with the latest version, install from PyPI:
 
 <!-- TODO: update this to the actual path where the repo's main branch will live -->
 ```sh
-%pip install git+https://github.com/michael-berk/unitycatalog-ai.git@michaelberk/crewai-tool-integration#subdirectory=integrations/crewai
+pip install ucai-crewai
 ```
 
 ## Getting started
