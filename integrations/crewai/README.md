@@ -12,7 +12,7 @@ pip install ucai-crewai
 
 ### From source
 
-To get started with the latest version, you can directly install this package from source via:
+To get started with the latest version, install from PyPI:
 
 <!-- TODO: update this to the actual path where the repo's main branch will live -->
 ```sh
